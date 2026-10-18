@@ -5,7 +5,12 @@
  * Connects HTML/CSS/JS frontend to Google Apps Script Web App
  * which reads/writes Google Sheets.
  * 
- * IMPORTANT: Replace API_URL with your deployed Apps Script Web App URL.
+ * Features:
+ * - Ultra-fast local-first rendering (0ms startup latency)
+ * - Stale-While-Revalidate caching with background Sheets sync
+ * - In-flight request deduplication (prevents duplicate network calls)
+ * - AbortController network timeouts to prevent UI hang
+ * - Offline / Local Mode fallback
  */
 
 // ============================================================
@@ -15,7 +20,6 @@ const API_URL = 'https://script.google.com/macros/s/AKfycbyx1WBNEUPVscZIZz6ByZo3
 
 // ============================================================
 // DATA STORE INITIALIZATION
-// Clean production mode: sample data cleared
 // ============================================================
 const SAMPLE_DATA = {
   students: [],
@@ -38,7 +42,6 @@ const DEFAULT_SETTINGS = {
 // Local storage persistence helper
 function loadLocalStore() {
   try {
-    // If older demo or test data exists, ensure it is reset cleanly
     if (localStorage.getItem('skilleze_prod_clean_v2') !== 'true') {
       localStorage.removeItem('skilleze_fee_store_v2');
       localStorage.setItem('skilleze_prod_clean_v2', 'true');
@@ -54,7 +57,9 @@ function loadLocalStore() {
         settings: { ...DEFAULT_SETTINGS, ...(parsed.settings || {}) },
         isConnectedToSheets: false,
         paymentIdCounter: parsed.paymentIdCounter || 1,
-        studentIdCounter: parsed.studentIdCounter || 1
+        studentIdCounter: parsed.studentIdCounter || 1,
+        cachedDashboard: parsed.cachedDashboard || null,
+        cachedDashboardTime: parsed.cachedDashboardTime || 0
       };
     }
   } catch (e) {
@@ -67,7 +72,9 @@ function loadLocalStore() {
     settings: { ...DEFAULT_SETTINGS },
     isConnectedToSheets: false,
     paymentIdCounter: 1,
-    studentIdCounter: 1
+    studentIdCounter: 1,
+    cachedDashboard: null,
+    cachedDashboardTime: 0
   };
 }
 
@@ -79,7 +86,9 @@ function persistLocalStore() {
       installments: _localStore.installments,
       settings: _localStore.settings,
       paymentIdCounter: _localStore.paymentIdCounter,
-      studentIdCounter: _localStore.studentIdCounter
+      studentIdCounter: _localStore.studentIdCounter,
+      cachedDashboard: _localStore.cachedDashboard,
+      cachedDashboardTime: _localStore.cachedDashboardTime
     }));
   } catch (e) { }
 }
@@ -87,9 +96,37 @@ function persistLocalStore() {
 let _localStore = loadLocalStore();
 
 // ============================================================
-// API STATE
+// MEMORY CACHE & STATE
 // ============================================================
 let _isUsingLocalData = true; // Will be set to false if Sheets is connected
+
+const _cache = {
+  dashboard: null,
+  dashboardTime: 0,
+  students: null,
+  studentsTime: 0,
+  payments: null,
+  paymentsTime: 0,
+  installments: null,
+  installmentsTime: 0,
+  reports: null,
+  reportsTime: 0
+};
+
+function clearCache() {
+  _cache.dashboard = null;
+  _cache.dashboardTime = 0;
+  _cache.students = null;
+  _cache.studentsTime = 0;
+  _cache.payments = null;
+  _cache.paymentsTime = 0;
+  _cache.installments = null;
+  _cache.installmentsTime = 0;
+  _cache.reports = null;
+  _cache.reportsTime = 0;
+  _localStore.cachedDashboard = null;
+  _localStore.cachedDashboardTime = 0;
+}
 
 // ============================================================
 // UTILITY FUNCTIONS
@@ -177,30 +214,58 @@ function generateReceiptNumber(paymentId) {
 }
 
 // ============================================================
-// HTTP HELPERS
+// HTTP HELPERS WITH TIMEOUT & DEDUPLICATION
 // ============================================================
-async function apiGet(params = {}) {
+const REQUEST_TIMEOUT_MS = 10000;
+const _inFlightRequests = new Map();
+
+async function apiGet(params = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   const url = new URL(API_URL);
-  Object.entries(params).forEach(([k, v]) => url.searchParams.append(k, v));
-  const res = await fetch(url.toString(), { method: 'GET' });
-  if (!res.ok) throw new Error('HTTP error ' + res.status);
-  return await res.json();
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== null) url.searchParams.append(k, v);
+  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url.toString(), { method: 'GET', signal: controller.signal });
+    if (!res.ok) throw new Error('HTTP error ' + res.status);
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function apiGetDeduped(params = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+  const key = JSON.stringify(params);
+  if (_inFlightRequests.has(key)) {
+    return _inFlightRequests.get(key);
+  }
+  const promise = apiGet(params, timeoutMs).finally(() => {
+    _inFlightRequests.delete(key);
+  });
+  _inFlightRequests.set(key, promise);
+  return promise;
 }
 
 async function apiPost(data = {}) {
-  // NOTE: Use 'text/plain' (NOT 'application/json') to avoid CORS preflight
-  // Google Apps Script /exec endpoints cannot handle OPTIONS preflight requests.
-  // The body is still valid JSON — Code.gs parses it with JSON.parse(e.postData.contents).
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify(data)
-  });
-  if (!res.ok) throw new Error('HTTP error ' + res.status);
-  const text = await res.text();
-  try { return JSON.parse(text); } catch (e) {
-    console.error('Apps Script returned non-JSON:', text.substring(0, 300));
-    throw new Error('Non-JSON response from Apps Script');
+  // NOTE: Use 'text/plain' to avoid CORS preflight
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(data),
+      signal: controller.signal
+    });
+    if (!res.ok) throw new Error('HTTP error ' + res.status);
+    const text = await res.text();
+    try { return JSON.parse(text); } catch (e) {
+      console.error('Apps Script returned non-JSON:', text.substring(0, 300));
+      throw new Error('Non-JSON response from Apps Script');
+    }
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -211,9 +276,19 @@ async function checkSheetsConnection() {
     return false;
   }
   try {
-    const res = await apiGet({ action: 'getDashboard' });
+    const res = await apiGetDeduped({ action: 'getDashboard' }, 8000);
     _isUsingLocalData = !res.success;
     _localStore.isConnectedToSheets = res.success;
+    if (res.success && res.data) {
+      _cache.dashboard = res.data;
+      _cache.dashboardTime = Date.now();
+      _localStore.cachedDashboard = res.data;
+      _localStore.cachedDashboardTime = Date.now();
+      persistLocalStore();
+
+      // Background prefetch for instant tab switches
+      setTimeout(prefetchSheetsData, 600);
+    }
     return res.success;
   } catch (e) {
     _isUsingLocalData = true;
@@ -222,61 +297,116 @@ async function checkSheetsConnection() {
   }
 }
 
+function prefetchSheetsData() {
+  if (_isUsingLocalData) return;
+  if (!_cache.students || (Date.now() - _cache.studentsTime > 60000)) {
+    apiGetDeduped({ action: 'getStudents' }).then(res => {
+      if (res && res.success && Array.isArray(res.data)) {
+        _localStore.students = res.data;
+        _cache.students = res.data;
+        _cache.studentsTime = Date.now();
+        persistLocalStore();
+      }
+    }).catch(() => {});
+  }
+  if (!_cache.payments || (Date.now() - _cache.paymentsTime > 60000)) {
+    apiGetDeduped({ action: 'getPayments' }).then(res => {
+      if (res && res.success && Array.isArray(res.data)) {
+        _localStore.payments = res.data;
+        _cache.payments = res.data;
+        _cache.paymentsTime = Date.now();
+        persistLocalStore();
+      }
+    }).catch(() => {});
+  }
+  if (!_cache.installments || (Date.now() - _cache.installmentsTime > 60000)) {
+    apiGetDeduped({ action: 'getInstallments' }).then(res => {
+      if (res && res.success && Array.isArray(res.data)) {
+        _localStore.installments = res.data;
+        _cache.installments = res.data;
+        _cache.installmentsTime = Date.now();
+        persistLocalStore();
+      }
+    }).catch(() => {});
+  }
+}
+
 // ============================================================
 // STUDENT API FUNCTIONS
 // ============================================================
 async function getStudents(params = {}) {
+  const { search = '', status = 'All', forceRefresh = false } = params;
+
+  const filterStudents = (list) => {
+    let students = [...list];
+    if (search) {
+      const q = search.toLowerCase();
+      students = students.filter(s =>
+        (s.Student_Name || '').toLowerCase().includes(q) ||
+        (s.Student_ID || '').toLowerCase().includes(q) ||
+        (s.Mobile || '').toString().includes(q) ||
+        (s.Course || '').toLowerCase().includes(q)
+      );
+    }
+    if (status && status !== 'All') {
+      students = students.filter(s => s.Payment_Status === status);
+    }
+    return students;
+  };
+
+  const isFresh = _cache.students && (Date.now() - _cache.studentsTime < 60000);
+  if (!forceRefresh && isFresh) {
+    return filterStudents(_cache.students);
+  }
+
+  if (!forceRefresh && _localStore.students && _localStore.students.length > 0) {
+    if (!_isUsingLocalData) {
+      apiGetDeduped({ action: 'getStudents' }).then(res => {
+        if (res && res.success && Array.isArray(res.data)) {
+          _localStore.students = res.data;
+          _cache.students = res.data;
+          _cache.studentsTime = Date.now();
+          persistLocalStore();
+        }
+      }).catch(() => {});
+    }
+    return filterStudents(_localStore.students);
+  }
+
   if (!_isUsingLocalData) {
     try {
-      const res = await apiGet({ action: 'getStudents', ...params });
-      if (res.success) return res.data;
-    } catch (e) { /* fall through to local */ }
+      const res = await apiGetDeduped({ action: 'getStudents' });
+      if (res && res.success && Array.isArray(res.data)) {
+        _localStore.students = res.data;
+        _cache.students = res.data;
+        _cache.studentsTime = Date.now();
+        persistLocalStore();
+        return filterStudents(res.data);
+      }
+    } catch (e) {
+      console.warn('Remote getStudents failed, falling back to local', e);
+    }
   }
 
-  // Local fallback
-  let students = [..._localStore.students];
-
-  if (params.search) {
-    const search = params.search.toLowerCase();
-    students = students.filter(s =>
-      (s.Student_Name || '').toLowerCase().includes(search) ||
-      (s.Student_ID || '').toLowerCase().includes(search) ||
-      (s.Mobile || '').toString().includes(search) ||
-      (s.Course || '').toLowerCase().includes(search)
-    );
-  }
-
-  if (params.status && params.status !== 'All') {
-    students = students.filter(s => s.Payment_Status === params.status);
-  }
-
-  return students;
+  return filterStudents(_localStore.students || []);
 }
 
 async function getStudent(id) {
+  const found = _localStore.students.find(s => s.Student_ID === id);
+  if (found) return found;
+
   if (!_isUsingLocalData) {
     try {
-      const res = await apiGet({ action: 'getStudent', id });
-      if (res.success) return res.data;
+      const res = await apiGetDeduped({ action: 'getStudent', id });
+      if (res && res.success && res.data) return res.data;
     } catch (e) { }
   }
-  return _localStore.students.find(s => s.Student_ID === id) || null;
+  return null;
 }
 
 async function addStudent(data) {
-  if (!_isUsingLocalData) {
-    try {
-      const res = await apiPost({ action: 'addStudent', data });
-      if (res.success) {
-        // Refresh local store
-        const students = await apiGet({ action: 'getStudents' });
-        if (students.success) _localStore.students = students.data;
-        return res;
-      }
-    } catch (e) { }
-  }
+  clearCache();
 
-  // Local operation
   const studentId = generateStudentId();
   const now = new Date().toISOString();
   const totalFee = parseFloat(data.Total_Fee) || 0;
@@ -338,15 +468,31 @@ async function addStudent(data) {
       Created_At: now
     };
     _localStore.payments.push(payment);
-
-    // Create installments
     _createLocalInstallments(studentId, data.Student_Name, data.Course, totalFee, firstPayment, numInstallments, data.Next_Due_Date, data.Installment_Plan);
   } else {
-    // Create installments without first payment
     _createLocalInstallments(studentId, data.Student_Name, data.Course, totalFee, 0, numInstallments, data.Next_Due_Date || data.First_Payment_Date, data.Installment_Plan);
   }
 
   persistLocalStore();
+
+  if (!_isUsingLocalData) {
+    try {
+      const res = await apiPost({ action: 'addStudent', data });
+      if (res && res.success) {
+        if (res.data?.studentId && res.data.studentId !== studentId) {
+          const s = _localStore.students.find(x => x.Student_ID === studentId);
+          if (s) s.Student_ID = res.data.studentId;
+          _localStore.payments.forEach(p => { if (p.Student_ID === studentId) p.Student_ID = res.data.studentId; });
+          _localStore.installments.forEach(i => { if (i.Student_ID === studentId) i.Student_ID = res.data.studentId; });
+          persistLocalStore();
+        }
+        return res;
+      }
+    } catch (e) {
+      console.warn('Remote addStudent failed, student kept locally', e);
+    }
+  }
+
   return { success: true, data: { studentId }, message: 'Student added successfully' };
 }
 
@@ -376,7 +522,6 @@ function _createLocalInstallments(studentId, studentName, course, totalFee, firs
 
   for (let i = startInst; i <= numInstallments; i++) {
     const isLast = i === numInstallments;
-    const paidSoFar = installmentAmount * (i - startInst);
     const amount = isLast ? Math.max(0, remaining - installmentAmount * (numInstallments - startInst)) : installmentAmount;
     _localStore.installments.push({
       Installment_ID: `INS-${studentId}-${String(i).padStart(3, '0')}`,
@@ -397,33 +542,43 @@ function _createLocalInstallments(studentId, studentName, course, totalFee, firs
 }
 
 async function updateStudent(data) {
+  clearCache();
+
+  const idx = _localStore.students.findIndex(s => s.Student_ID === data.Student_ID);
+  if (idx >= 0) {
+    _localStore.students[idx] = { ..._localStore.students[idx], ...data, Updated_At: new Date().toISOString() };
+    persistLocalStore();
+  }
+
   if (!_isUsingLocalData) {
     try {
       const res = await apiPost({ action: 'updateStudent', data });
-      if (res.success) return res;
-    } catch (e) { }
+      if (res && res.success) return res;
+    } catch (e) {
+      console.warn('Remote updateStudent failed, updated locally', e);
+    }
   }
 
-  const idx = _localStore.students.findIndex(s => s.Student_ID === data.Student_ID);
-  if (idx < 0) return { success: false, message: 'Student not found' };
-
-  _localStore.students[idx] = { ..._localStore.students[idx], ...data, Updated_At: new Date().toISOString() };
-  persistLocalStore();
   return { success: true, message: 'Student updated successfully' };
 }
 
 async function deleteStudent(studentId) {
-  if (!_isUsingLocalData) {
-    try {
-      const res = await apiPost({ action: 'deleteStudent', id: studentId });
-      if (res.success) return res;
-    } catch (e) { }
-  }
+  clearCache();
 
   _localStore.students = _localStore.students.filter(s => s.Student_ID !== studentId);
   _localStore.payments = _localStore.payments.filter(p => p.Student_ID !== studentId);
   _localStore.installments = _localStore.installments.filter(i => i.Student_ID !== studentId);
   persistLocalStore();
+
+  if (!_isUsingLocalData) {
+    try {
+      const res = await apiPost({ action: 'deleteStudent', id: studentId });
+      if (res && res.success) return res;
+    } catch (e) {
+      console.warn('Remote deleteStudent failed, deleted locally', e);
+    }
+  }
+
   return { success: true, message: 'Student deleted successfully' };
 }
 
@@ -431,14 +586,8 @@ async function deleteStudent(studentId) {
 // PAYMENT API FUNCTIONS
 // ============================================================
 async function recordPayment(data) {
-  if (!_isUsingLocalData) {
-    try {
-      const res = await apiPost({ action: 'addPayment', data });
-      if (res.success) return res;
-    } catch (e) { }
-  }
+  clearCache();
 
-  // Local operation
   const student = _localStore.students.find(s => s.Student_ID === data.Student_ID);
   if (!student) return { success: false, message: 'Student not found' };
 
@@ -448,30 +597,40 @@ async function recordPayment(data) {
   const remaining = parseFloat(student.Remaining_Fee) || 0;
   if (amountPaid > remaining) return { success: false, message: 'Payment amount exceeds remaining fee' };
 
-  const newTotalPaid = parseFloat(student.Total_Paid || 0) + amountPaid;
-  const newRemaining = parseFloat(student.Total_Fee) - newTotalPaid;
+  const paymentId = generatePaymentId();
+  const now = new Date().toISOString();
+  const currentPaid = parseFloat(student.Total_Paid) || 0;
+  const newTotalPaid = currentPaid + amountPaid;
+  const newRemaining = parseFloat(student.Total_Fee || 0) - newTotalPaid;
 
   let paymentStatus = 'Partially Paid';
   if (newRemaining <= 0) paymentStatus = 'Completed';
   else if (newTotalPaid === 0) paymentStatus = 'Pending';
 
-  // Determine installment number
   const existingPayments = _localStore.payments.filter(p => p.Student_ID === data.Student_ID);
   const installmentNumber = parseInt(data.Installment_Number) || (existingPayments.length + 1);
 
   const numInstallments = parseInt(student.Num_Installments) || 1;
-  const remainingInstallments = numInstallments - installmentNumber;
-  const nextInstallmentAmount = remainingInstallments > 0 ? Math.ceil(newRemaining / remainingInstallments) : 0;
+  const remainingInstallments = Math.max(0, numInstallments - installmentNumber);
+  const nextInstallmentAmount = remainingInstallments > 0 ? Math.ceil(newRemaining / remainingInstallments) : newRemaining;
 
-  // Calculate next due date
-  const planDays = student.Installment_Plan === 'Weekly' ? 7 : student.Installment_Plan === 'Quarterly' ? 90 : 30;
-  const nextDueDateObj = new Date(data.Payment_Date || new Date());
-  nextDueDateObj.setDate(nextDueDateObj.getDate() + planDays);
-  const nextDueDate = newRemaining > 0 ? nextDueDateObj.toISOString().split('T')[0] : '';
+  let nextDueDate = '';
+  if (newRemaining > 0) {
+    const payDate = data.Payment_Date ? new Date(data.Payment_Date) : new Date();
+    let days = 30;
+    if (student.Installment_Plan === 'Weekly') days = 7;
+    else if (student.Installment_Plan === 'Quarterly') days = 90;
+    payDate.setDate(payDate.getDate() + days);
+    nextDueDate = payDate.toISOString().split('T')[0];
+  }
 
-  // Save payment
-  const paymentId = generatePaymentId();
-  const now = new Date().toISOString();
+  student.Total_Paid = newTotalPaid;
+  student.Remaining_Fee = newRemaining;
+  student.Payment_Status = paymentStatus;
+  student.Next_Installment_Amount = nextInstallmentAmount;
+  student.Next_Due_Date = nextDueDate;
+  student.Updated_At = now;
+
   const payment = {
     Payment_ID: paymentId,
     Student_ID: data.Student_ID,
@@ -484,21 +643,10 @@ async function recordPayment(data) {
     Installment_Number: installmentNumber,
     Remaining_After_Payment: newRemaining,
     Remarks: data.Remarks || '',
-    Created_At: now
-  };
-  _localStore.payments.push(payment);
-
-  // Update student
-  const studentIdx = _localStore.students.findIndex(s => s.Student_ID === data.Student_ID);
-  _localStore.students[studentIdx] = {
-    ..._localStore.students[studentIdx],
-    Total_Paid: newTotalPaid,
-    Remaining_Fee: newRemaining,
-    Next_Installment_Amount: nextInstallmentAmount,
-    Next_Due_Date: nextDueDate,
-    Payment_Status: paymentStatus,
+    Created_At: now,
     Updated_At: now
   };
+  _localStore.payments.push(payment);
 
   // Update installment status
   const instIdx = _localStore.installments.findIndex(
@@ -512,8 +660,20 @@ async function recordPayment(data) {
   }
 
   const receiptNumber = generateReceiptNumber(paymentId);
+  persistLocalStore();
 
-  const response = {
+  if (!_isUsingLocalData) {
+    try {
+      const res = await apiPost({ action: 'addPayment', data });
+      if (res && res.success) {
+        return res;
+      }
+    } catch (e) {
+      console.warn('Remote addPayment failed, payment kept locally', e);
+    }
+  }
+
+  return {
     success: true,
     message: 'Payment recorded successfully',
     data: {
@@ -527,68 +687,116 @@ async function recordPayment(data) {
       installmentNumber
     }
   };
-  persistLocalStore();
-  return response;
 }
 
-async function getPayments(studentId = null) {
-  if (!_isUsingLocalData) {
-    try {
-      const params = { action: 'getPayments' };
-      if (studentId) params.studentId = studentId;
-      const res = await apiGet(params);
-      if (res.success) return res.data;
-    } catch (e) { }
+async function getPayments(studentId = null, { forceRefresh = false } = {}) {
+  const filterList = (list) => {
+    let payments = [...list];
+    if (studentId) payments = payments.filter(p => p.Student_ID === studentId);
+    return payments;
+  };
+
+  const isFresh = _cache.payments && (Date.now() - _cache.paymentsTime < 60000);
+  if (!forceRefresh && isFresh) {
+    return filterList(_cache.payments);
   }
 
-  let payments = [..._localStore.payments];
-  if (studentId) payments = payments.filter(p => p.Student_ID === studentId);
-  return payments.reverse();
+  if (!forceRefresh && _localStore.payments && _localStore.payments.length > 0) {
+    if (!_isUsingLocalData) {
+      apiGetDeduped({ action: 'getPayments' }).then(res => {
+        if (res && res.success && Array.isArray(res.data)) {
+          _localStore.payments = res.data;
+          _cache.payments = res.data;
+          _cache.paymentsTime = Date.now();
+          persistLocalStore();
+        }
+      }).catch(() => {});
+    }
+    return filterList(_localStore.payments);
+  }
+
+  if (!_isUsingLocalData) {
+    try {
+      const res = await apiGetDeduped({ action: 'getPayments' });
+      if (res && res.success && Array.isArray(res.data)) {
+        _localStore.payments = res.data;
+        _cache.payments = res.data;
+        _cache.paymentsTime = Date.now();
+        persistLocalStore();
+        return filterList(res.data);
+      }
+    } catch (e) {
+      console.warn('Remote getPayments failed, using local store', e);
+    }
+  }
+
+  return filterList(_localStore.payments || []);
 }
 
 // ============================================================
 // INSTALLMENT API FUNCTIONS
 // ============================================================
-async function getInstallments(studentId = null) {
-  if (!_isUsingLocalData) {
-    try {
-      const params = { action: 'getInstallments' };
-      if (studentId) params.studentId = studentId;
-      const res = await apiGet(params);
-      if (res.success) return res.data;
-    } catch (e) { }
+async function getInstallments(studentId = null, { forceRefresh = false } = {}) {
+  const mapStatuses = (list) => {
+    return list.map(inst => ({
+      ...inst,
+      Status: inst.Status === 'Paid' || inst.Status === 'Completed'
+        ? inst.Status
+        : calculateInstallmentStatus(inst.Due_Date, inst.Remaining_Amount, inst.Paid_Amount),
+      Days_Overdue: getDaysOverdue(inst.Due_Date)
+    }));
+  };
+
+  const filterList = (list) => {
+    let installments = [...list];
+    if (studentId) installments = installments.filter(i => i.Student_ID === studentId);
+    return mapStatuses(installments);
+  };
+
+  const isFresh = _cache.installments && (Date.now() - _cache.installmentsTime < 60000);
+  if (!forceRefresh && isFresh) {
+    return filterList(_cache.installments);
   }
 
-  let installments = [..._localStore.installments];
-  if (studentId) installments = installments.filter(i => i.Student_ID === studentId);
+  if (!forceRefresh && _localStore.installments && _localStore.installments.length > 0) {
+    if (!_isUsingLocalData) {
+      apiGetDeduped({ action: 'getInstallments' }).then(res => {
+        if (res && res.success && Array.isArray(res.data)) {
+          _localStore.installments = res.data;
+          _cache.installments = res.data;
+          _cache.installmentsTime = Date.now();
+          persistLocalStore();
+        }
+      }).catch(() => {});
+    }
+    return filterList(_localStore.installments);
+  }
 
-  // Recalculate statuses
-  installments = installments.map(inst => ({
-    ...inst,
-    Status: inst.Status === 'Paid' || inst.Status === 'Completed'
-      ? inst.Status
-      : calculateInstallmentStatus(inst.Due_Date, inst.Remaining_Amount, inst.Paid_Amount),
-    Days_Overdue: getDaysOverdue(inst.Due_Date)
-  }));
+  if (!_isUsingLocalData) {
+    try {
+      const res = await apiGetDeduped({ action: 'getInstallments' });
+      if (res && res.success && Array.isArray(res.data)) {
+        _localStore.installments = res.data;
+        _cache.installments = res.data;
+        _cache.installmentsTime = Date.now();
+        persistLocalStore();
+        return filterList(res.data);
+      }
+    } catch (e) {
+      console.warn('Remote getInstallments failed, using local store', e);
+    }
+  }
 
-  return installments;
+  return filterList(_localStore.installments || []);
 }
 
 // ============================================================
 // DASHBOARD API FUNCTION
 // ============================================================
-async function getDashboard() {
-  if (!_isUsingLocalData) {
-    try {
-      const res = await apiGet({ action: 'getDashboard' });
-      if (res.success) return res.data;
-    } catch (e) { }
-  }
-
-  // Calculate from local store
-  const students = _localStore.students;
-  const payments = _localStore.payments;
-  const installments = _localStore.installments;
+function computeLocalDashboard() {
+  const students = _localStore.students || [];
+  const payments = _localStore.payments || [];
+  const installments = _localStore.installments || [];
 
   const totalStudents = students.length;
   const totalFees = students.reduce((sum, s) => sum + (parseFloat(s.Total_Fee) || 0), 0);
@@ -644,21 +852,80 @@ async function getDashboard() {
   };
 }
 
+function getCachedDashboard() {
+  if (_cache.dashboard) return _cache.dashboard;
+  if (_localStore.cachedDashboard) return _localStore.cachedDashboard;
+  if (_localStore.students && _localStore.students.length > 0) return computeLocalDashboard();
+  return null;
+}
+
+async function getDashboard({ forceRefresh = false } = {}) {
+  if (!forceRefresh) {
+    const cached = getCachedDashboard();
+    const isFresh = _cache.dashboard && (Date.now() - _cache.dashboardTime < 60000);
+    if (isFresh && cached) {
+      return cached;
+    }
+    if (cached) {
+      if (!_isUsingLocalData) {
+        apiGetDeduped({ action: 'getDashboard' }).then(res => {
+          if (res && res.success && res.data) {
+            _cache.dashboard = res.data;
+            _cache.dashboardTime = Date.now();
+            _localStore.cachedDashboard = res.data;
+            _localStore.cachedDashboardTime = Date.now();
+            persistLocalStore();
+          }
+        }).catch(() => {});
+      }
+      return cached;
+    }
+  }
+
+  if (!_isUsingLocalData) {
+    try {
+      const res = await apiGetDeduped({ action: 'getDashboard' });
+      if (res && res.success && res.data) {
+        _cache.dashboard = res.data;
+        _cache.dashboardTime = Date.now();
+        _localStore.cachedDashboard = res.data;
+        _localStore.cachedDashboardTime = Date.now();
+        persistLocalStore();
+        return res.data;
+      }
+    } catch (e) {
+      console.warn('Remote getDashboard failed, falling back to local calculation', e);
+    }
+  }
+
+  return computeLocalDashboard();
+}
+
 // ============================================================
 // REPORTS API FUNCTION
 // ============================================================
-async function getReports() {
-  if (!_isUsingLocalData) {
-    try {
-      const res = await apiGet({ action: 'getReports' });
-      if (res.success) return res.data;
-    } catch (e) { }
+async function getReports({ forceRefresh = false } = {}) {
+  const isFresh = _cache.reports && (Date.now() - _cache.reportsTime < 60000);
+  if (!forceRefresh && isFresh) {
+    return _cache.reports;
   }
 
-  const payments = _localStore.payments;
-  const students = _localStore.students;
+  if (!_isUsingLocalData) {
+    try {
+      const res = await apiGetDeduped({ action: 'getReports' });
+      if (res && res.success && res.data) {
+        _cache.reports = res.data;
+        _cache.reportsTime = Date.now();
+        return res.data;
+      }
+    } catch (e) {
+      console.warn('Remote getReports failed, falling back to local calculation', e);
+    }
+  }
 
-  // Daily collection (last 7 days)
+  const payments = _localStore.payments || [];
+  const students = _localStore.students || [];
+
   const dailyMap = {};
   const monthlyMap = {};
   const courseMap = {};
@@ -694,7 +961,10 @@ async function getReports() {
     .map(s => ({ Student_ID: s.Student_ID, Student_Name: s.Student_Name, Course: s.Course, Remaining_Fee: s.Remaining_Fee, Payment_Status: s.Payment_Status }))
     .sort((a, b) => b.Remaining_Fee - a.Remaining_Fee);
 
-  return { dailyCollection, monthlyCollection, courseCollection, pendingFees };
+  const localReports = { dailyCollection, monthlyCollection, courseCollection, pendingFees };
+  _cache.reports = localReports;
+  _cache.reportsTime = Date.now();
+  return localReports;
 }
 
 // ============================================================
@@ -703,8 +973,12 @@ async function getReports() {
 async function getSettings() {
   if (!_isUsingLocalData) {
     try {
-      const res = await apiGet({ action: 'getSettings' });
-      if (res.success) { _localStore.settings = res.data; return res.data; }
+      const res = await apiGetDeduped({ action: 'getSettings' });
+      if (res && res.success) {
+        _localStore.settings = res.data;
+        persistLocalStore();
+        return res.data;
+      }
     } catch (e) { }
   }
   return _localStore.settings;
@@ -714,7 +988,11 @@ async function saveSettings(data) {
   if (!_isUsingLocalData) {
     try {
       const res = await apiPost({ action: 'updateSettings', data });
-      if (res.success) { _localStore.settings = { ..._localStore.settings, ...data }; return res; }
+      if (res && res.success) {
+        _localStore.settings = { ..._localStore.settings, ...data };
+        persistLocalStore();
+        return res;
+      }
     } catch (e) { }
   }
   _localStore.settings = { ..._localStore.settings, ...data };
@@ -730,7 +1008,6 @@ function generateReceiptData(paymentId, studentId) {
   const student = _localStore.students.find(s => s.Student_ID === studentId);
   if (!payment || !student) return null;
 
-  // Retrieve next due date and next installment amount from student or scheduled installments
   let nextDueDate = student.Next_Due_Date || '';
   let nextInstAmount = student.Next_Installment_Amount || 0;
   if (!nextDueDate && Array.isArray(_localStore.installments)) {

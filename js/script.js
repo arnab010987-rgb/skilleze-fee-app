@@ -31,7 +31,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   initModals();
   updateTopbarDate();
 
-  // Check Sheets connection (silently)
+  // Load dashboard immediately from cache / local data — 0ms instant render
+  navigateTo('dashboard');
+
+  // Check Sheets connection in background (non-blocking)
   checkSheetsConnection().then(connected => {
     const statusText = document.getElementById('topbar-status-text');
     const statusDot = document.querySelector('.topbar-status .status-dot');
@@ -39,15 +42,23 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (statusText) statusText.textContent = 'Sheets Live';
       if (statusDot) statusDot.style.background = 'var(--success)';
       showToast('success', 'Connected', 'Google Sheets connected successfully.');
+      // Refresh current dashboard view in-place if user is still on dashboard
+      if (App.currentPage === 'dashboard') {
+        const cached = typeof getCachedDashboard === 'function' ? getCachedDashboard() : null;
+        if (cached) {
+          renderDashboardStats(cached);
+          renderRecentPayments(cached.recentPayments || []);
+          renderOverdueInstallments(cached.overdueInstallments || [], cached.overdueCount || 0);
+          renderUpcomingInstallments(cached.upcomingInstallments || []);
+          renderCollectionChart(cached);
+        }
+      }
     } else {
       if (statusText) statusText.textContent = 'Local Mode';
       if (statusDot) statusDot.style.background = 'var(--accent)';
       showToast('info', 'Ready', 'System loaded in Local Mode. Connect Google Sheets in Settings to sync online.');
     }
   });
-
-  // Load dashboard on start
-  navigateTo('dashboard');
 });
 
 // ============================================================
@@ -232,18 +243,20 @@ function closeAllModals() {
 // DASHBOARD
 // ============================================================
 async function renderDashboard(container) {
+  const cached = typeof getCachedDashboard === 'function' ? getCachedDashboard() : null;
+
   container.innerHTML = `
     <div class="page-header">
       <div class="page-header-left">
         <h1>📊 Dashboard Overview</h1>
         <p>Welcome to Skilleze Fee Management System</p>
       </div>
-      <button class="btn btn-outline" onclick="navigateTo('dashboard')">
+      <button class="btn btn-outline" id="btn-refresh-dashboard" onclick="refreshDashboard()">
         🔄 Refresh
       </button>
     </div>
     <div id="dashboard-stats" class="stats-grid">
-      ${[1,2,3,4,5,6,7].map(() => `<div class="stat-card stat-blue" style="min-height:100px;"><div class="spinner spinner-sm" style="margin:auto"></div></div>`).join('')}
+      ${cached ? '' : [1,2,3,4,5,6,7].map(() => `<div class="stat-card stat-blue" style="min-height:100px;"><div class="spinner spinner-sm" style="margin:auto"></div></div>`).join('')}
     </div>
     <div class="dashboard-grid">
       <div>
@@ -253,7 +266,7 @@ async function renderDashboard(container) {
             <button class="btn btn-sm btn-outline" onclick="navigateTo('payments')">View All</button>
           </div>
           <div id="recent-payments-list" class="card-body" style="padding:0">
-            <div style="padding:2rem;text-align:center"><div class="spinner" style="margin:0 auto"></div></div>
+            ${cached ? '' : '<div style="padding:2rem;text-align:center"><div class="spinner" style="margin:0 auto"></div></div>'}
           </div>
         </div>
         <div class="card">
@@ -262,7 +275,7 @@ async function renderDashboard(container) {
             <span id="overdue-badge" class="badge badge-danger">—</span>
           </div>
           <div id="overdue-list" class="card-body" style="padding:0">
-            <div style="padding:2rem;text-align:center"><div class="spinner" style="margin:0 auto"></div></div>
+            ${cached ? '' : '<div style="padding:2rem;text-align:center"><div class="spinner" style="margin:0 auto"></div></div>'}
           </div>
         </div>
       </div>
@@ -272,7 +285,7 @@ async function renderDashboard(container) {
             <div class="card-title">📅 Due Soon (7 Days)</div>
           </div>
           <div id="upcoming-list" class="card-body" style="padding:0">
-            <div style="padding:2rem;text-align:center"><div class="spinner" style="margin:0 auto"></div></div>
+            ${cached ? '' : '<div style="padding:2rem;text-align:center"><div class="spinner" style="margin:0 auto"></div></div>'}
           </div>
         </div>
         <div class="card">
@@ -280,23 +293,61 @@ async function renderDashboard(container) {
             <div class="card-title">📈 Fee Collection</div>
           </div>
           <div class="card-body" id="collection-chart">
-            <div style="padding:1rem;text-align:center"><div class="spinner" style="margin:0 auto"></div></div>
+            ${cached ? '' : '<div style="padding:1rem;text-align:center"><div class="spinner" style="margin:0 auto"></div></div>'}
           </div>
         </div>
       </div>
     </div>
   `;
 
+  if (cached) {
+    renderDashboardStats(cached);
+    renderRecentPayments(cached.recentPayments || []);
+    renderOverdueInstallments(cached.overdueInstallments || [], cached.overdueCount || 0);
+    renderUpcomingInstallments(cached.upcomingInstallments || []);
+    renderCollectionChart(cached);
+  }
+
   try {
     const data = await getDashboard();
-    renderDashboardStats(data);
-    renderRecentPayments(data.recentPayments || []);
-    renderOverdueInstallments(data.overdueInstallments || [], data.overdueCount || 0);
-    renderUpcomingInstallments(data.upcomingInstallments || []);
-    renderCollectionChart(data);
+    if (App.currentPage === 'dashboard') {
+      renderDashboardStats(data);
+      renderRecentPayments(data.recentPayments || []);
+      renderOverdueInstallments(data.overdueInstallments || [], data.overdueCount || 0);
+      renderUpcomingInstallments(data.upcomingInstallments || []);
+      renderCollectionChart(data);
+    }
   } catch (err) {
     console.error('Dashboard error:', err);
-    showToast('error', 'Error', 'Failed to load dashboard data.');
+    if (!cached) {
+      showToast('error', 'Error', 'Failed to load dashboard data.');
+    }
+  }
+}
+
+async function refreshDashboard() {
+  const btn = document.getElementById('btn-refresh-dashboard');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner spinner-sm" style="margin-right:6px"></span> Syncing...';
+  }
+  try {
+    const data = await getDashboard({ forceRefresh: true });
+    if (App.currentPage === 'dashboard') {
+      renderDashboardStats(data);
+      renderRecentPayments(data.recentPayments || []);
+      renderOverdueInstallments(data.overdueInstallments || [], data.overdueCount || 0);
+      renderUpcomingInstallments(data.upcomingInstallments || []);
+      renderCollectionChart(data);
+    }
+    showToast('success', 'Updated', 'Dashboard synchronized with Google Sheets.');
+  } catch (err) {
+    showToast('error', 'Sync Failed', 'Could not refresh from Google Sheets.');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '🔄 Refresh';
+    }
   }
 }
 
@@ -501,7 +552,9 @@ async function loadStudentsTable() {
   const tbody = document.getElementById('students-table-body');
   if (!tbody) return;
 
-  tbody.innerHTML = `<div style="padding:3rem;text-align:center"><div class="spinner" style="margin:0 auto"></div></div>`;
+  if (!tbody.querySelector('table') && (!Array.isArray(_localStore.students) || _localStore.students.length === 0)) {
+    tbody.innerHTML = `<div style="padding:3rem;text-align:center"><div class="spinner" style="margin:0 auto"></div></div>`;
+  }
 
   try {
     const students = await getStudents({ search: App.studentSearch, status: App.studentFilter });
@@ -562,6 +615,7 @@ async function loadStudentsTable() {
                   <button class="btn btn-sm btn-outline" onclick="viewStudent('${s.Student_ID}')">👁 View</button>
                   <button class="btn btn-sm btn-outline-gray" onclick="editStudent('${s.Student_ID}')">✏️ Edit</button>
                   <button class="btn btn-sm btn-success" onclick="openRecordPayment('${s.Student_ID}')">💰 Pay</button>
+                  <button class="btn btn-sm btn-danger" onclick="confirmDeleteStudent('${s.Student_ID}','${s.Student_Name}')">🗑 Delete</button>
                 </div>
               </td>
             </tr>
@@ -868,14 +922,16 @@ async function renderStudentProfile(container, studentId) {
   container.innerHTML = `<div style="padding:4rem;text-align:center"><div class="spinner" style="margin:0 auto;margin-bottom:1rem"></div><div class="loading-text">Loading student profile...</div></div>`;
 
   try {
-    const student = await getStudent(studentId);
+    const [student, payments, installments] = await Promise.all([
+      getStudent(studentId),
+      getPayments(studentId),
+      getInstallments(studentId)
+    ]);
+
     if (!student) {
       container.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><h3>Student Not Found</h3><p>The student you are looking for does not exist.</p><button class="btn btn-primary mt-4" onclick="navigateTo('students')">Back to Students</button></div>`;
       return;
     }
-
-    const payments = await getPayments(studentId);
-    const installments = await getInstallments(studentId);
 
     const totalFee = parseFloat(student.Total_Fee) || 0;
     const totalPaid = parseFloat(student.Total_Paid) || 0;
@@ -1150,6 +1206,42 @@ function renderDeleteConfirmModal() {
   </div>`;
 }
 
+function confirmDeleteStudent(studentId, studentName) {
+  openModal('modal-delete-confirm');
+
+  // Update the modal body to show the student name
+  const modalBody = document.querySelector('#modal-delete-confirm .modal-body p:first-child');
+  if (modalBody) {
+    modalBody.innerHTML = `Are you sure you want to delete <strong>${studentName}</strong>? This will also delete all their payment and installment records.`;
+  }
+
+  const btn = document.getElementById('btn-confirm-delete');
+  // Remove previous listener to avoid stacking
+  const newBtn = btn.cloneNode(true);
+  btn.parentNode.replaceChild(newBtn, btn);
+
+  newBtn.onclick = async () => {
+    newBtn.disabled = true;
+    newBtn.innerHTML = '<div class="spinner spinner-sm"></div> Deleting...';
+    try {
+      const result = await deleteStudent(studentId);
+      if (result.success) {
+        showToast('success', 'Deleted', `${studentName} has been removed.`);
+        closeModal('modal-delete-confirm');
+        await loadStudentsTable();
+      } else {
+        showToast('error', 'Error', result.message || 'Failed to delete student.');
+      }
+    } catch (err) {
+      showToast('error', 'Error', 'Failed to delete student.');
+      console.error(err);
+    } finally {
+      newBtn.disabled = false;
+      newBtn.textContent = 'Delete';
+    }
+  };
+}
+
 // ============================================================
 // RECORD PAYMENT MODAL
 // ============================================================
@@ -1349,7 +1441,16 @@ async function openRecordPayment(studentId, showSelector = false) {
   };
 }
 
-function viewReceipt(paymentId, studentId) {
+async function viewReceipt(paymentId, studentId) {
+  // Ensure local store has payment & student data (needed when Sheets Live is active)
+  if (!_localStore.payments.find(p => p.Payment_ID === paymentId)) {
+    const allPayments = await getPayments();
+    _localStore.payments = allPayments;
+  }
+  if (!_localStore.students.find(s => s.Student_ID === studentId)) {
+    const allStudents = await getStudents();
+    _localStore.students = allStudents;
+  }
   App.receiptData = generateReceiptData(paymentId, studentId);
   App.viewingStudentId = studentId;
   navigateTo('receipt');
@@ -1872,6 +1973,68 @@ async function renderSettings(container) {
 // RECEIPT PAGE — PROFESSIONAL INSTITUTIONAL VOUCHER & INVOICE
 // ============================================================
 
+function generateReceiptData(paymentId, studentId) {
+  const payment  = _localStore.payments.find(p => p.Payment_ID === paymentId);
+  const student  = _localStore.students.find(s => s.Student_ID === studentId);
+  const settings = _localStore.settings || {};
+  if (!payment || !student) return null;
+
+  const prefix = settings.Receipt_Prefix || 'SKZ';
+  const year   = new Date().getFullYear();
+  const num    = (paymentId || '').replace('PAY', '').padStart(4, '0');
+  const receiptNumber = `${prefix}-${year}-${num}`;
+
+  return {
+    receiptNumber,
+    paymentId:         payment.Payment_ID,
+    studentId:         student.Student_ID,
+    studentName:       student.Student_Name,
+    course:            student.Course || payment.Course || '—',
+    batchId:           student.Batch_ID || '—',
+    paymentDate:       payment.Payment_Date,
+    amountPaid:        parseFloat(payment.Amount_Paid || 0),
+    paymentMode:       payment.Payment_Mode || '—',
+    transactionId:     payment.Transaction_ID || '',
+    installmentNumber: payment.Installment_Number || 1,
+    totalFee:          parseFloat(student.Total_Fee || 0),
+    totalPaid:         parseFloat(student.Paid_Amount || 0),
+    remainingFee:      parseFloat(student.Remaining_Fee || 0),
+    paymentStatus:     student.Payment_Status || '—',
+    // Institute info
+    instituteName:    settings.Institute_Name    || 'SKILLEZE TECHNOLOGIES',
+    instituteAddress: settings.Institute_Address || '',
+    contactNumber:    settings.Contact_Number    || '',
+    email:            settings.Email             || '',
+    website:          settings.Website           || '',
+  };
+}
+
+// (Merged into the primary renderReceiptPage function below — this duplicate removed)
+
+function renderReceiptDisplay(data) {
+  if (!data) {
+    showToast('warning', 'Error', 'Could not load receipt data.');
+    return;
+  }
+  App.receiptData = data;
+  const area = document.getElementById('receipt-display-area');
+  if (!area) return;
+
+  const settings = _localStore.settings || {};
+  area.innerHTML = `
+    <div style="display:flex;gap:1rem;justify-content:flex-end;margin-bottom:1rem;flex-wrap:wrap">
+      <button class="btn btn-success" onclick="window.print()">🖨️ Print Receipt</button>
+      <button class="btn btn-outline" onclick="copyReceiptSummary()">📋 Copy Summary</button>
+    </div>
+    ${generateReceiptSheetHTML(data, settings, 'STUDENT COPY')}
+    <div style="margin-top:1.5rem;border-top:2px dashed var(--gray-200);padding-top:1.5rem">
+      ${generateReceiptSheetHTML(data, settings, 'INSTITUTION COPY')}
+    </div>
+  `;
+
+  area.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 function numberToWords(amount) {
   const num = Math.round(parseFloat(amount) || 0);
   if (num === 0) return 'Zero';
@@ -2152,117 +2315,106 @@ function generateReceiptSheetHTML(data, settings, copyLabel = 'STUDENT COPY') {
   `;
 }
 
-function renderReceiptPage(container) {
-  const data = App.receiptData;
+async function renderReceiptPage(container) {
+  // If navigated here via the Receipt button, App.receiptData is already set
+  const preloaded = App.receiptData;
 
-  if (!data) {
-    const students = _localStore.students || [];
-    const payments = _localStore.payments || [];
+  // If we already have receipt data, render full receipt view immediately
+  if (preloaded) {
+    const settings = _localStore.settings || {};
+    const currentMode = App.receiptCopyType || 'student';
+
+    let receiptSheetsHtml = '';
+    if (currentMode === 'both') {
+      receiptSheetsHtml = `
+        ${generateReceiptSheetHTML(preloaded, settings, 'STUDENT COPY')}
+        <div class="receipt-perforation"></div>
+        ${generateReceiptSheetHTML(preloaded, settings, 'INSTITUTE RECORD COPY')}
+      `;
+    } else if (currentMode === 'office') {
+      receiptSheetsHtml = generateReceiptSheetHTML(preloaded, settings, 'INSTITUTE RECORD COPY');
+    } else {
+      receiptSheetsHtml = generateReceiptSheetHTML(preloaded, settings, 'STUDENT COPY');
+    }
+
+    const backDestination = App.viewingStudentId ? 'Student Profile' : 'Payments';
+    const backAction = App.viewingStudentId ? `navigateTo('student-profile')` : `navigateTo('payments')`;
 
     container.innerHTML = `
-      <div class="content-wrapper" style="max-width:760px;margin:2rem auto">
-        <div class="card">
-          <div class="card-header">
-            <div class="card-title">🖨️ Fee Receipt Generator</div>
-            <button class="btn btn-sm btn-outline-gray" onclick="navigateTo('students')">View Students</button>
-          </div>
-          <div class="card-body">
-            <div style="text-align:center;padding:1.5rem 0">
-              <div style="font-size:3.5rem;margin-bottom:0.75rem">🧾</div>
-              <h3 style="font-family:var(--font-heading);font-size:1.2rem;color:var(--gray-900);margin-bottom:0.5rem">Select a Payment to View or Print Receipt</h3>
-              <p style="font-size:0.875rem;color:var(--gray-500);max-width:480px;margin:0 auto 1.5rem">
-                Select any recorded student payment below to generate its official institutional receipt.
-              </p>
-            </div>
-
-            <div style="border-top:1px solid var(--gray-200);padding-top:1.5rem">
-              <label class="form-label" style="margin-bottom:0.5rem">Choose Recorded Payment</label>
-              <div style="display:flex;gap:0.75rem;flex-wrap:wrap">
-                <select id="select-receipt-payment" class="form-control" style="flex:1;min-width:260px">
-                  <option value="">-- Select a Recorded Payment --</option>
-                  ${payments.slice().reverse().map(p => {
-                    const stu = students.find(s => s.Student_ID === p.Student_ID);
-                    const name = stu ? stu.Student_Name : p.Student_ID;
-                    return `<option value="${p.Payment_ID}" data-student="${p.Student_ID}">
-                      ${p.Payment_ID} &middot; ${name} &middot; ${formatCurrency(p.Amount_Paid)} (${p.Payment_Mode}) &middot; ${formatDate(p.Payment_Date)}
-                    </option>`;
-                  }).join('')}
-                </select>
-                <button class="btn btn-primary" onclick="loadSelectedReceipt()">
-                  📄 Generate Receipt
-                </button>
-              </div>
+      <div class="receipt-page-view">
+        <div class="receipt-action-bar no-print">
+          <div class="receipt-action-left">
+            <button class="btn btn-sm btn-outline-gray" onclick="${backAction}">
+              ← Back to ${backDestination}
+            </button>
+            <div style="display:flex;align-items:center;gap:0.5rem">
+              <span style="font-weight:700;color:var(--gray-800);font-size:0.95rem">Receipt:</span>
+              <span class="receipt-number-badge">${preloaded.receiptNumber}</span>
             </div>
           </div>
+          <div class="receipt-action-right">
+            <div class="copy-mode-toggle">
+              <button class="copy-mode-btn ${currentMode === 'student' ? 'active' : ''}" onclick="setReceiptCopyMode('student')">Student Copy</button>
+              <button class="copy-mode-btn ${currentMode === 'office' ? 'active' : ''}" onclick="setReceiptCopyMode('office')">Office Copy</button>
+              <button class="copy-mode-btn ${currentMode === 'both' ? 'active' : ''}" onclick="setReceiptCopyMode('both')">Both (Split Slip)</button>
+            </div>
+            <button class="btn btn-sm btn-outline-gray" onclick="copyReceiptSummary()">📋 Copy Info</button>
+            <button class="btn btn-sm btn-primary" onclick="window.print()">🖨️ Print / Save PDF</button>
+          </div>
+        </div>
+        <div class="receipt-preview-canvas">
+          ${receiptSheetsHtml}
         </div>
       </div>
     `;
     return;
   }
 
-  const settings = _localStore.settings || {};
-  const currentMode = App.receiptCopyType || 'student';
+  // No receipt pre-selected — show the payment picker
+  const payments = await getPayments();
+  const students = _localStore.students || [];
 
-  let receiptSheetsHtml = '';
-  if (currentMode === 'both') {
-    receiptSheetsHtml = `
-      ${generateReceiptSheetHTML(data, settings, 'STUDENT COPY')}
-      <div class="receipt-perforation"></div>
-      ${generateReceiptSheetHTML(data, settings, 'INSTITUTE RECORD COPY')}
-    `;
-  } else if (currentMode === 'office') {
-    receiptSheetsHtml = generateReceiptSheetHTML(data, settings, 'INSTITUTE RECORD COPY');
-  } else {
-    receiptSheetsHtml = generateReceiptSheetHTML(data, settings, 'STUDENT COPY');
-  }
-
-  const backDestination = App.viewingStudentId ? 'Student Profile' : 'Payments';
-  const backAction = App.viewingStudentId ? `navigateTo('student-profile')` : `navigateTo('payments')`;
+  const dropdownOptions = payments.slice().map(p => {
+    const stu = students.find(s => s.Student_ID === p.Student_ID);
+    const name = stu ? stu.Student_Name : p.Student_ID;
+    return `<option value="${p.Payment_ID}" data-student="${p.Student_ID}">
+      ${p.Payment_ID} &middot; ${name} &middot; ${formatCurrency(p.Amount_Paid)} (${p.Payment_Mode}) &middot; ${formatDate(p.Payment_Date)}
+    </option>`;
+  }).join('');
 
   container.innerHTML = `
-    <div class="receipt-page-view">
-      <!-- Top Action Toolbar -->
-      <div class="receipt-action-bar no-print">
-        <div class="receipt-action-left">
-          <button class="btn btn-sm btn-outline-gray" onclick="${backAction}" title="Return to ${backDestination}">
-            ← Back to ${backDestination}
-          </button>
-          <div style="display:flex;align-items:center;gap:0.5rem">
-            <span style="font-weight:700;color:var(--gray-800);font-size:0.95rem">Receipt:</span>
-            <span class="receipt-number-badge">${data.receiptNumber}</span>
+    <div class="content-wrapper" style="max-width:760px;margin:2rem auto">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">🖨️ Fee Receipt Generator</div>
+          <button class="btn btn-sm btn-outline-gray" onclick="navigateTo('students')">View Students</button>
+        </div>
+        <div class="card-body">
+          <div style="text-align:center;padding:1.5rem 0">
+            <div style="font-size:3.5rem;margin-bottom:0.75rem">🧾</div>
+            <h3 style="font-family:var(--font-heading);font-size:1.2rem;color:var(--gray-900);margin-bottom:0.5rem">Select a Payment to View or Print Receipt</h3>
+            <p style="font-size:0.875rem;color:var(--gray-500);max-width:480px;margin:0 auto 1.5rem">
+              Select any recorded student payment below to generate its official institutional receipt.
+            </p>
+          </div>
+          <div style="border-top:1px solid var(--gray-200);padding-top:1.5rem">
+            <label class="form-label" style="margin-bottom:0.5rem">Choose Recorded Payment</label>
+            <div style="display:flex;gap:0.75rem;flex-wrap:wrap">
+              <select id="select-receipt-payment" class="form-control" style="flex:1;min-width:260px">
+                <option value="">-- Select a Recorded Payment --</option>
+                ${dropdownOptions}
+              </select>
+              <button class="btn btn-primary" id="btn-generate-receipt">📄 Generate Receipt</button>
+            </div>
+            ${payments.length === 0 ? `<p style="color:var(--gray-400);margin-top:0.5rem;font-size:0.875rem">No payments recorded yet. <a href="#" onclick="navigateTo('students')">Add a student</a> and record a payment first.</p>` : ''}
           </div>
         </div>
-
-        <div class="receipt-action-right">
-          <!-- Copy Mode Selector -->
-          <div class="copy-mode-toggle" title="Select Copy Type for Screen and Print">
-            <button class="copy-mode-btn ${currentMode === 'student' ? 'active' : ''}" onclick="setReceiptCopyMode('student')">
-              Student Copy
-            </button>
-            <button class="copy-mode-btn ${currentMode === 'office' ? 'active' : ''}" onclick="setReceiptCopyMode('office')">
-              Office Copy
-            </button>
-            <button class="copy-mode-btn ${currentMode === 'both' ? 'active' : ''}" onclick="setReceiptCopyMode('both')">
-              Both (Split Slip)
-            </button>
-          </div>
-
-          <button class="btn btn-sm btn-outline-gray" onclick="copyReceiptSummary()" title="Copy receipt details to clipboard">
-            📋 Copy Info
-          </button>
-
-          <button class="btn btn-sm btn-primary" onclick="window.print()" title="Print receipt or save as PDF">
-            🖨️ Print / Save PDF
-          </button>
-        </div>
-      </div>
-
-      <!-- Screen Preview Canvas -->
-      <div class="receipt-preview-canvas">
-        ${receiptSheetsHtml}
       </div>
     </div>
   `;
+
+  const genBtn = document.getElementById('btn-generate-receipt');
+  if (genBtn) genBtn.addEventListener('click', loadSelectedReceipt);
 }
 
 function setReceiptCopyMode(mode) {
@@ -2308,7 +2460,7 @@ Official Computer Generated Receipt &middot; Verified
   }
 }
 
-function loadSelectedReceipt() {
+async function loadSelectedReceipt() {
   const sel = document.getElementById('select-receipt-payment');
   if (!sel || !sel.value) {
     showToast('warning', 'Selection Required', 'Please select a recorded payment from the dropdown.');
@@ -2317,8 +2469,28 @@ function loadSelectedReceipt() {
   const paymentId = sel.value;
   const opt = sel.options[sel.selectedIndex];
   const studentId = opt.getAttribute('data-student');
-  viewReceipt(paymentId, studentId);
+
+  // Ensure local store is populated (important when Sheets Live is active)
+  if (!_localStore.payments.find(p => p.Payment_ID === paymentId)) {
+    const allPayments = await getPayments();
+    _localStore.payments = allPayments;
+  }
+  if (!_localStore.students.find(s => s.Student_ID === studentId)) {
+    const allStudents = await getStudents();
+    _localStore.students = allStudents;
+  }
+
+  const data = generateReceiptData(paymentId, studentId);
+  if (!data) {
+    showToast('error', 'Error', 'Could not load receipt data. Please try again.');
+    return;
+  }
+  // Store receipt data and re-render page in full receipt view
+  App.receiptData = data;
+  const container = document.getElementById('page-container');
+  if (container) renderReceiptPage(container);
 }
+
 
 // ============================================================
 // UTILITY FUNCTIONS
