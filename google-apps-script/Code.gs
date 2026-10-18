@@ -21,15 +21,8 @@ const SHEET_PAYMENTS    = 'Payments';
 const SHEET_INSTALLMENTS = 'Installments';
 const SHEET_SETTINGS    = 'Settings';
 
-// ============================================================
-// CORS HEADERS
-// ============================================================
-function setCORSHeaders(output) {
-  return output
-    .setHeader('Access-Control-Allow-Origin', '*')
-    .setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-    .setHeader('Access-Control-Allow-Headers', 'Content-Type');
-}
+// NOTE: Apps Script /exec handles CORS automatically when deployed with
+// "Who has access: Anyone". No custom headers are needed or supported.
 
 // ============================================================
 // doGet — Handle GET Requests
@@ -68,16 +61,14 @@ function doGet(e) {
         result = { success: false, message: 'Unknown action: ' + action };
     }
 
-    const output = ContentService
+    return ContentService
       .createTextOutput(JSON.stringify(result))
       .setMimeType(ContentService.MimeType.JSON);
-    return setCORSHeaders(output);
 
   } catch (err) {
-    const output = ContentService
+    return ContentService
       .createTextOutput(JSON.stringify({ success: false, message: err.toString() }))
       .setMimeType(ContentService.MimeType.JSON);
-    return setCORSHeaders(output);
   }
 }
 
@@ -116,16 +107,14 @@ function doPost(e) {
         result = { success: false, message: 'Unknown action: ' + action };
     }
 
-    const output = ContentService
+    return ContentService
       .createTextOutput(JSON.stringify(result))
       .setMimeType(ContentService.MimeType.JSON);
-    return setCORSHeaders(output);
 
   } catch (err) {
-    const output = ContentService
+    return ContentService
       .createTextOutput(JSON.stringify({ success: false, message: err.toString() }))
       .setMimeType(ContentService.MimeType.JSON);
-    return setCORSHeaders(output);
   }
 }
 
