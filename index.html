@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Skilleze Technologies Fee Payment Management System — Track student enrollments, fees, payments, and installments.">
+  <meta name="author" content="Skilleze Technologies">
+  <title>Fee Payment Management — Skilleze Technologies</title>
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="assets/skilleze-emblem.png">
+
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- Sidebar Overlay (mobile) -->
+  <div id="sidebar-overlay" class="sidebar-overlay"></div>
+
+  <!-- App Wrapper -->
+  <div class="app-wrapper">
+
+    <!-- =========================================================
+         SIDEBAR
+         ========================================================= -->
+    <aside id="sidebar" class="sidebar">
+
+      <!-- Brand -->
+      <div class="sidebar-brand">
+        <img src="assets/skilleze-logo-transparent.png" alt="Skilleze Technologies" class="sidebar-brand-img">
+        <span class="sidebar-brand-pill">Fee Management</span>
+      </div>
+
+      <!-- Navigation -->
+      <nav class="sidebar-nav" role="navigation" aria-label="Main Navigation">
+        <div class="nav-section-label">Main</div>
+
+        <button class="nav-item active" data-page="dashboard" id="nav-dashboard" aria-label="Dashboard">
+          <span class="nav-icon">📊</span>
+          Dashboard
+        </button>
+
+        <button class="nav-item" data-page="students" id="nav-students" aria-label="Students">
+          <span class="nav-icon">👨‍🎓</span>
+          Students
+        </button>
+
+        <button class="nav-item" data-page="payments" id="nav-payments" aria-label="Payments">
+          <span class="nav-icon">💳</span>
+          Payments
+        </button>
+
+        <button class="nav-item" data-page="installments" id="nav-installments" aria-label="Installments">
+          <span class="nav-icon">📅</span>
+          Installments
+        </button>
+
+        <div class="nav-section-label">Analytics</div>
+
+        <button class="nav-item" data-page="reports" id="nav-reports" aria-label="Reports">
+          <span class="nav-icon">📈</span>
+          Reports
+        </button>
+
+        <div class="nav-section-label">System</div>
+
+        <button class="nav-item" data-page="settings" id="nav-settings" aria-label="Settings">
+          <span class="nav-icon">⚙️</span>
+          Settings
+        </button>
+      </nav>
+
+      <!-- Footer -->
+      <div class="sidebar-footer">
+        <div style="font-size:0.7rem;color:rgba(255,255,255,.25);line-height:1.6">
+          <div style="color:rgba(255,255,255,.5);font-weight:600;margin-bottom:2px">Skilleze Technologies</div>
+          <div>Fee Management System</div>
+          <div>v1.0.0 &middot; 2026</div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- =========================================================
+         MAIN CONTENT
+         ========================================================= -->
+    <div class="main-content">
+
+      <!-- Topbar -->
+      <header class="topbar" role="banner">
+        <div class="topbar-left">
+          <button class="hamburger-btn" id="hamburger-btn" aria-label="Toggle Menu">
+            ☰
+          </button>
+          <div class="topbar-heading">
+            <span class="topbar-badge">Skilleze ERP</span>
+            <span class="page-title" id="page-title">Dashboard</span>
+          </div>
+        </div>
+
+        <div class="topbar-right">
+          <!-- Quick Action Buttons -->
+          <div class="topbar-actions">
+            <button class="btn btn-sm btn-outline-gray" onclick="openAddStudentModal()" title="Add New Student">
+              ➕ Add Student
+            </button>
+            <button class="btn btn-sm btn-primary" onclick="openQuickPaymentModal()" title="Record Fee Payment">
+              💰 Record Payment
+            </button>
+          </div>
+
+          <!-- Connection Status Pill -->
+          <div class="topbar-status" id="topbar-status-badge">
+            <span class="status-dot"></span>
+            <span class="status-label" id="topbar-status-text">Ready</span>
+          </div>
+
+          <!-- Live Date -->
+          <div class="topbar-date" id="topbar-date"></div>
+
+          <!-- User Profile -->
+          <div class="topbar-avatar" title="Administrator">AD</div>
+        </div>
+      </header>
+
+      <!-- Page Container (Dynamic Content) -->
+      <main id="page-container" class="page-content" role="main">
+        <!-- Rendered by JavaScript -->
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:60vh;gap:1rem">
+          <div class="spinner"></div>
+          <div class="loading-text">Loading Skilleze Fee Management...</div>
+        </div>
+      </main>
+
+    </div><!-- /.main-content -->
+
+  </div><!-- /.app-wrapper -->
+
+  <!-- =========================================================
+       GLOBAL MODALS ROOT (Anchored directly to body)
+       ========================================================= -->
+  <div id="modals-root"></div>
+
+  <!-- =========================================================
+       GLOBAL OVERLAYS
+       ========================================================= -->
+
+  <!-- Loading Overlay -->
+  <div id="loading-overlay" class="loading-overlay" role="status" aria-live="polite">
+    <div class="spinner"></div>
+    <div class="loading-text">Loading...</div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div id="toast-container" class="toast-container" aria-live="assertive" aria-atomic="true"></div>
+
+  <!-- =========================================================
+       SCRIPTS
+       ========================================================= -->
+  <script src="js/api.js"></script>
+  <script src="js/script.js"></script>
+
+</body>
+</html>
