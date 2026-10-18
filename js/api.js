@@ -11,7 +11,7 @@
 // ============================================================
 // SINGLE CONFIGURATION POINT — Replace with your actual URL
 // ============================================================
-const API_URL = 'https://script.google.com/a/macros/skilleze.digiteease.com/s/AKfycbyx1WBNEUPVscZIZz6ByZo38qjce5PDjsL9JqYVuQrZ5sTbA2BdWtiOr1N_ZgdOU9XA/exec';
+const API_URL = 'https://script.google.com/macros/s/AKfycbyx1WBNEUPVscZIZz6ByZo38qjce5PDjsL9JqYVuQrZ5sTbA2BdWtiOr1N_ZgdOU9XA/exec';
 
 // ============================================================
 // DATA STORE INITIALIZATION
@@ -81,7 +81,7 @@ function persistLocalStore() {
       paymentIdCounter: _localStore.paymentIdCounter,
       studentIdCounter: _localStore.studentIdCounter
     }));
-  } catch (e) {}
+  } catch (e) { }
 }
 
 let _localStore = loadLocalStore();
@@ -188,13 +188,20 @@ async function apiGet(params = {}) {
 }
 
 async function apiPost(data = {}) {
+  // NOTE: Use 'text/plain' (NOT 'application/json') to avoid CORS preflight
+  // Google Apps Script /exec endpoints cannot handle OPTIONS preflight requests.
+  // The body is still valid JSON — Code.gs parses it with JSON.parse(e.postData.contents).
   const res = await fetch(API_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
     body: JSON.stringify(data)
   });
   if (!res.ok) throw new Error('HTTP error ' + res.status);
-  return await res.json();
+  const text = await res.text();
+  try { return JSON.parse(text); } catch (e) {
+    console.error('Apps Script returned non-JSON:', text.substring(0, 300));
+    throw new Error('Non-JSON response from Apps Script');
+  }
 }
 
 // Check if Google Sheets is connected
@@ -251,7 +258,7 @@ async function getStudent(id) {
     try {
       const res = await apiGet({ action: 'getStudent', id });
       if (res.success) return res.data;
-    } catch (e) {}
+    } catch (e) { }
   }
   return _localStore.students.find(s => s.Student_ID === id) || null;
 }
@@ -266,7 +273,7 @@ async function addStudent(data) {
         if (students.success) _localStore.students = students.data;
         return res;
       }
-    } catch (e) {}
+    } catch (e) { }
   }
 
   // Local operation
@@ -394,7 +401,7 @@ async function updateStudent(data) {
     try {
       const res = await apiPost({ action: 'updateStudent', data });
       if (res.success) return res;
-    } catch (e) {}
+    } catch (e) { }
   }
 
   const idx = _localStore.students.findIndex(s => s.Student_ID === data.Student_ID);
@@ -410,7 +417,7 @@ async function deleteStudent(studentId) {
     try {
       const res = await apiPost({ action: 'deleteStudent', id: studentId });
       if (res.success) return res;
-    } catch (e) {}
+    } catch (e) { }
   }
 
   _localStore.students = _localStore.students.filter(s => s.Student_ID !== studentId);
@@ -428,7 +435,7 @@ async function recordPayment(data) {
     try {
       const res = await apiPost({ action: 'addPayment', data });
       if (res.success) return res;
-    } catch (e) {}
+    } catch (e) { }
   }
 
   // Local operation
@@ -531,7 +538,7 @@ async function getPayments(studentId = null) {
       if (studentId) params.studentId = studentId;
       const res = await apiGet(params);
       if (res.success) return res.data;
-    } catch (e) {}
+    } catch (e) { }
   }
 
   let payments = [..._localStore.payments];
@@ -549,7 +556,7 @@ async function getInstallments(studentId = null) {
       if (studentId) params.studentId = studentId;
       const res = await apiGet(params);
       if (res.success) return res.data;
-    } catch (e) {}
+    } catch (e) { }
   }
 
   let installments = [..._localStore.installments];
@@ -575,7 +582,7 @@ async function getDashboard() {
     try {
       const res = await apiGet({ action: 'getDashboard' });
       if (res.success) return res.data;
-    } catch (e) {}
+    } catch (e) { }
   }
 
   // Calculate from local store
@@ -597,16 +604,16 @@ async function getDashboard() {
 
   const activeInstallments = installments.filter(i => i.Status !== 'Paid' && i.Status !== 'Completed');
   const dueTodayCount = activeInstallments.filter(i => {
-    const d = new Date(i.Due_Date); d.setHours(0,0,0,0);
+    const d = new Date(i.Due_Date); d.setHours(0, 0, 0, 0);
     return d.getTime() === today.getTime();
   }).length;
   const upcomingCount = activeInstallments.filter(i => {
-    const d = new Date(i.Due_Date); d.setHours(0,0,0,0);
-    const diff = Math.ceil((d - today) / (1000*60*60*24));
+    const d = new Date(i.Due_Date); d.setHours(0, 0, 0, 0);
+    const diff = Math.ceil((d - today) / (1000 * 60 * 60 * 24));
     return diff > 0 && diff <= 7;
   }).length;
   const overdueCount = activeInstallments.filter(i => {
-    const d = new Date(i.Due_Date); d.setHours(0,0,0,0);
+    const d = new Date(i.Due_Date); d.setHours(0, 0, 0, 0);
     return d < today;
   }).length;
 
@@ -614,7 +621,7 @@ async function getDashboard() {
 
   const overdueInstallments = activeInstallments
     .filter(i => {
-      const d = new Date(i.Due_Date); d.setHours(0,0,0,0);
+      const d = new Date(i.Due_Date); d.setHours(0, 0, 0, 0);
       return d < today;
     })
     .map(i => ({ ...i, Days_Overdue: getDaysOverdue(i.Due_Date) }))
@@ -622,8 +629,8 @@ async function getDashboard() {
 
   const upcomingInstallments = activeInstallments
     .filter(i => {
-      const d = new Date(i.Due_Date); d.setHours(0,0,0,0);
-      const diff = Math.ceil((d - today) / (1000*60*60*24));
+      const d = new Date(i.Due_Date); d.setHours(0, 0, 0, 0);
+      const diff = Math.ceil((d - today) / (1000 * 60 * 60 * 24));
       return diff >= 0 && diff <= 30;
     })
     .sort((a, b) => new Date(a.Due_Date) - new Date(b.Due_Date))
@@ -645,7 +652,7 @@ async function getReports() {
     try {
       const res = await apiGet({ action: 'getReports' });
       if (res.success) return res.data;
-    } catch (e) {}
+    } catch (e) { }
   }
 
   const payments = _localStore.payments;
@@ -698,7 +705,7 @@ async function getSettings() {
     try {
       const res = await apiGet({ action: 'getSettings' });
       if (res.success) { _localStore.settings = res.data; return res.data; }
-    } catch (e) {}
+    } catch (e) { }
   }
   return _localStore.settings;
 }
@@ -708,7 +715,7 @@ async function saveSettings(data) {
     try {
       const res = await apiPost({ action: 'updateSettings', data });
       if (res.success) { _localStore.settings = { ..._localStore.settings, ...data }; return res; }
-    } catch (e) {}
+    } catch (e) { }
   }
   _localStore.settings = { ..._localStore.settings, ...data };
   persistLocalStore();

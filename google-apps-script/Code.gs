@@ -15,7 +15,7 @@
 // ============================================================
 // CONFIGURATION
 // ============================================================
-const SPREADSHEET_ID = 'YOUR_SPREADSHEET_ID_HERE'; // Replace with your Google Spreadsheet ID
+const SPREADSHEET_ID = '1lNMsy0wm04HAi9mQwEpcI7Dzing19x6IezF-yMI2oQM'; // Replace with your Google Spreadsheet ID
 const SHEET_STUDENTS    = 'Students';
 const SHEET_PAYMENTS    = 'Payments';
 const SHEET_INSTALLMENTS = 'Installments';
