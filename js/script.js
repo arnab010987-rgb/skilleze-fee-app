@@ -1038,11 +1038,13 @@ async function renderStudentProfile(container, studentId) {
                     <td>${formatDate(p.Payment_Date)}</td>
                     <td style="font-weight:700;color:var(--success)">${formatCurrency(p.Amount_Paid)}</td>
                     <td><span class="badge badge-info">${p.Payment_Mode}</span></td>
-                    <td style="font-size:0.8rem;color:var(--gray-400)">${p.Transaction_ID || '—'}</td>
+                    <td style="font-size:0.8rem;color:var(--gray-700);font-family:monospace;word-break:break-all;max-width:180px">${p.Transaction_ID || '—'}</td>
                     <td>${p.Installment_Number || '—'}</td>
                     <td>${formatCurrency(p.Remaining_After_Payment)}</td>
-                    <td>
+                    <td style="display:flex;gap:0.4rem;flex-wrap:wrap">
                       <button class="btn btn-sm btn-outline" onclick="viewReceipt('${p.Payment_ID}','${student.Student_ID}')">🖨 Receipt</button>
+                      <button class="btn btn-sm btn-outline" style="border-color:var(--primary);color:var(--primary)" onclick="openEditPayment('${p.Payment_ID}')">✏️ Edit</button>
+                      <button class="btn btn-sm btn-danger" onclick="confirmDeletePayment('${p.Payment_ID}','${p.Amount_Paid}','${p.Payment_Date}')">🗑 Delete</button>
                     </td>
                   </tr>
                 `).join('')}
@@ -1203,6 +1205,102 @@ function renderDeleteConfirmModal() {
         <button class="btn btn-danger" id="btn-confirm-delete">Delete</button>
       </div>
     </div>
+  </div>
+  <div class="modal-overlay" id="modal-delete-payment-confirm">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <div class="modal-title" style="color:var(--danger)">🗑️ Delete Payment</div>
+        <button class="modal-close" onclick="closeModal('modal-delete-payment-confirm')">✕</button>
+      </div>
+      <div class="modal-body">
+        <p id="del-pay-msg" style="color:var(--gray-600)">Are you sure you want to delete this payment?</p>
+        <p style="font-weight:700;color:var(--danger);margin-top:0.75rem">This will reverse the student balance and remove the record from Google Sheets. Cannot be undone.</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline-gray" onclick="closeModal('modal-delete-payment-confirm')">Cancel</button>
+        <button class="btn btn-danger" id="btn-confirm-delete-payment">🗑 Delete Payment</button>
+      </div>
+    </div>
+  </div>
+  <div class="modal-overlay" id="modal-purge-confirm">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <div class="modal-title" style="color:var(--danger)">🔴 Purge All Payments</div>
+        <button class="modal-close" onclick="closeModal('modal-purge-confirm')">✕</button>
+      </div>
+      <div class="modal-body">
+        <p style="color:var(--gray-600)">This will <strong>permanently delete ALL payments and installments</strong> from both the app and Google Sheets.</p>
+        <p style="color:var(--gray-600);margin-top:0.5rem">Student records are kept but all fee balances reset to ₹0 paid / Pending status.</p>
+        <p style="font-weight:700;color:var(--danger);margin-top:0.75rem">⚠️ Payment IDs will restart from PAY001. This CANNOT be undone!</p>
+        <div style="margin-top:1rem">
+          <label style="font-size:0.85rem;color:var(--gray-600);font-weight:600">Type <code>PURGE</code> to confirm:</label>
+          <input type="text" id="purge-confirm-input" class="form-control" placeholder="Type PURGE here" style="margin-top:0.35rem">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline-gray" onclick="closeModal('modal-purge-confirm')">Cancel</button>
+        <button class="btn btn-danger" id="btn-confirm-purge">🔴 Purge All Payments</button>
+      </div>
+    </div>
+  </div>
+  <div class="modal-overlay" id="modal-edit-payment">
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title">✏️ Edit Payment</div>
+        <button class="modal-close" onclick="closeModal('modal-edit-payment')">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="edit-pay-id">
+        <input type="hidden" id="edit-pay-student-id">
+        <div style="background:var(--gray-50);border:1px solid var(--gray-200);border-radius:var(--radius-md);padding:0.75rem 1rem;margin-bottom:1rem;display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <div style="font-size:0.75rem;color:var(--gray-500)">Payment ID</div>
+            <div id="edit-pay-id-label" style="font-family:monospace;font-weight:700;color:var(--primary)"></div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:0.75rem;color:var(--gray-500)">Student</div>
+            <div id="edit-pay-student-label" style="font-weight:700;color:var(--gray-800)"></div>
+          </div>
+        </div>
+        <div class="form-grid" style="grid-template-columns:1fr 1fr;gap:1rem">
+          <div class="form-group">
+            <label class="form-label">Payment Date *</label>
+            <input type="date" id="edit-pay-date" class="form-control" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Amount Paid (₹) *</label>
+            <input type="number" id="edit-pay-amount" class="form-control" min="1" step="0.01" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Payment Mode *</label>
+            <select id="edit-pay-mode" class="form-control">
+              <option value="UPI">UPI</option>
+              <option value="Cash">Cash</option>
+              <option value="Bank Transfer">Bank Transfer</option>
+              <option value="Cheque">Cheque</option>
+              <option value="Card">Card</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Installment Number</label>
+            <input type="number" id="edit-pay-installment-num" class="form-control" min="1" max="24">
+          </div>
+          <div class="form-group col-span-2">
+            <label class="form-label">Transaction ID / UPI Reference (Full)</label>
+            <input type="text" id="edit-pay-transaction-id" class="form-control" placeholder="UPI ref / UTR / Txn ID">
+          </div>
+          <div class="form-group col-span-2">
+            <label class="form-label">Remarks</label>
+            <textarea id="edit-pay-remarks" class="form-control" style="min-height:50px" placeholder="Optional notes..."></textarea>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline-gray" onclick="closeModal('modal-edit-payment')">Cancel</button>
+        <button class="btn btn-primary" id="btn-save-edit-payment" onclick="saveEditedPayment()">💾 Save Changes</button>
+      </div>
+    </div>
   </div>`;
 }
 
@@ -1240,6 +1338,173 @@ function confirmDeleteStudent(studentId, studentName) {
       newBtn.textContent = 'Delete';
     }
   };
+}
+
+// ============================================================
+// DELETE PAYMENT CONFIRMATION
+// ============================================================
+function confirmDeletePayment(paymentId, amount, date) {
+  openModal('modal-delete-payment-confirm');
+  const msg = document.getElementById('del-pay-msg');
+  if (msg) {
+    msg.innerHTML = `Are you sure you want to delete payment <strong>${paymentId}</strong> of <strong>${formatCurrency(parseFloat(amount))}</strong> on ${formatDate(date)}?`;
+  }
+
+  const btn = document.getElementById('btn-confirm-delete-payment');
+  const newBtn = btn.cloneNode(true);
+  btn.parentNode.replaceChild(newBtn, btn);
+
+  newBtn.onclick = async () => {
+    newBtn.disabled = true;
+    newBtn.innerHTML = '<div class="spinner spinner-sm"></div> Deleting...';
+    try {
+      const result = await deletePayment(paymentId);
+      if (result.success) {
+        showToast('success', 'Payment Deleted', `Payment ${paymentId} removed from the system and Google Sheets.`);
+        closeModal('modal-delete-payment-confirm');
+        if (App.currentPage === 'student-profile') {
+          renderStudentProfile(document.getElementById('page-container'), App.viewingStudentId);
+        } else if (App.currentPage === 'payments') {
+          navigateTo('payments');
+        } else {
+          navigateTo('dashboard');
+        }
+      } else {
+        showToast('error', 'Error', result.message || 'Failed to delete payment.');
+      }
+    } catch (err) {
+      showToast('error', 'Error', 'Failed to delete payment.');
+      console.error(err);
+    } finally {
+      newBtn.disabled = false;
+      newBtn.innerHTML = '🗑 Delete Payment';
+    }
+  };
+}
+
+// ============================================================
+// PURGE ALL PAYMENTS (FRESH START)
+// ============================================================
+function openPurgeModal() {
+  openModal('modal-purge-confirm');
+  const input = document.getElementById('purge-confirm-input');
+  if (input) input.value = '';
+
+  const btn = document.getElementById('btn-confirm-purge');
+  const newBtn = btn.cloneNode(true);
+  btn.parentNode.replaceChild(newBtn, btn);
+
+  newBtn.onclick = async () => {
+    const confirmInput = document.getElementById('purge-confirm-input');
+    if (!confirmInput || confirmInput.value.trim().toUpperCase() !== 'PURGE') {
+      showToast('warning', 'Confirmation Required', 'Please type PURGE in the box to confirm this destructive action.');
+      return;
+    }
+    newBtn.disabled = true;
+    newBtn.innerHTML = '<div class="spinner spinner-sm"></div> Purging...';
+    try {
+      const result = await purgeAllPayments();
+      if (result.success) {
+        showToast('success', '✅ Fresh Start Done', 'All payments wiped. IDs reset from PAY001. System ready for fresh use.');
+        closeModal('modal-purge-confirm');
+        navigateTo('dashboard');
+      } else {
+        showToast('error', 'Error', result.message || 'Purge failed.');
+      }
+    } catch (err) {
+      showToast('error', 'Error', 'Failed to purge payments.');
+      console.error(err);
+    } finally {
+      newBtn.disabled = false;
+      newBtn.innerHTML = '🔴 Purge All Payments';
+    }
+// ============================================================
+// EDIT PAYMENT
+// ============================================================
+function openEditPayment(paymentId) {
+  const p = _localStore.payments.find(x => x.Payment_ID === paymentId);
+  if (!p) {
+    showToast('error', 'Error', 'Payment record not found.');
+    return;
+  }
+  const s = _localStore.students.find(stu => stu.Student_ID === p.Student_ID);
+
+  document.getElementById('edit-pay-id').value = p.Payment_ID;
+  document.getElementById('edit-pay-student-id').value = p.Student_ID;
+  document.getElementById('edit-pay-id-label').textContent = p.Payment_ID;
+  document.getElementById('edit-pay-student-label').textContent = s ? `${s.Student_Name} (${s.Student_ID})` : p.Student_ID;
+
+  let d = p.Payment_Date || '';
+  if (d.includes('T')) d = d.split('T')[0];
+  document.getElementById('edit-pay-date').value = d;
+  document.getElementById('edit-pay-amount').value = p.Amount_Paid || '';
+  document.getElementById('edit-pay-mode').value = p.Payment_Mode || 'UPI';
+  document.getElementById('edit-pay-installment-num').value = p.Installment_Number || 1;
+  document.getElementById('edit-pay-transaction-id').value = p.Transaction_ID || '';
+  document.getElementById('edit-pay-remarks').value = p.Remarks || '';
+
+  openModal('modal-edit-payment');
+}
+
+async function saveEditedPayment() {
+  const paymentId = document.getElementById('edit-pay-id').value;
+  const studentId = document.getElementById('edit-pay-student-id').value;
+  const payDate = document.getElementById('edit-pay-date').value;
+  const amount = parseFloat(document.getElementById('edit-pay-amount').value);
+  const mode = document.getElementById('edit-pay-mode').value;
+  const instNo = parseInt(document.getElementById('edit-pay-installment-num').value) || 1;
+  const txnId = document.getElementById('edit-pay-transaction-id').value.trim();
+  const remarks = document.getElementById('edit-pay-remarks').value.trim();
+
+  if (isNaN(amount) || amount <= 0) {
+    showToast('warning', 'Validation', 'Please enter a valid payment amount.');
+    return;
+  }
+  if (!payDate) {
+    showToast('warning', 'Validation', 'Please select a payment date.');
+    return;
+  }
+
+  const btn = document.getElementById('btn-save-edit-payment');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner spinner-sm"></div> Saving...';
+
+  try {
+    const res = await updatePayment({
+      Payment_ID: paymentId,
+      Student_ID: studentId,
+      Payment_Date: payDate,
+      Amount_Paid: amount,
+      Payment_Mode: mode,
+      Transaction_ID: txnId,
+      Installment_Number: instNo,
+      Remarks: remarks
+    });
+
+    if (res && res.success) {
+      showToast('success', 'Payment Updated', `Payment ${paymentId} updated successfully.`);
+      closeModal('modal-edit-payment');
+
+      // Refresh UI depending on active page
+      if (App.currentPage === 'student-profile') {
+        renderStudentProfile(document.getElementById('page-container'), studentId);
+      } else if (App.currentPage === 'payments') {
+        renderPayments(document.getElementById('page-container'));
+      } else if (App.currentPage === 'receipt') {
+        App.receiptData = generateReceiptData(paymentId, studentId);
+        renderReceiptPage(document.getElementById('page-container'));
+      } else if (App.currentPage === 'dashboard') {
+        renderDashboard(document.getElementById('page-container'));
+      }
+    } else {
+      showToast('error', 'Error', res?.message || 'Failed to update payment.');
+    }
+  } catch (err) {
+    showToast('error', 'Error', 'Failed to update payment: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '💾 Save Changes';
+  }
 }
 
 // ============================================================
@@ -1544,11 +1809,13 @@ async function renderPayments(container) {
               <td>${p.Course || '—'}</td>
               <td style="font-weight:700;color:var(--success)">${formatCurrency(p.Amount_Paid)}</td>
               <td><span class="badge badge-info">${p.Payment_Mode}</span></td>
-              <td style="font-size:0.8rem;color:var(--gray-400)">${p.Transaction_ID || '—'}</td>
+              <td style="font-size:0.8rem;color:var(--gray-700);font-family:monospace;word-break:break-all;max-width:180px">${p.Transaction_ID || '—'}</td>
               <td>${p.Installment_Number || '—'}</td>
               <td>${formatCurrency(p.Remaining_After_Payment)}</td>
-              <td>
+              <td style="display:flex;gap:0.4rem;flex-wrap:wrap">
                 <button class="btn btn-sm btn-outline" onclick="viewReceipt('${p.Payment_ID}','${p.Student_ID}')">🖨 Receipt</button>
+                <button class="btn btn-sm btn-outline" style="border-color:var(--primary);color:var(--primary)" onclick="openEditPayment('${p.Payment_ID}')">✏️ Edit</button>
+                <button class="btn btn-sm btn-danger" onclick="confirmDeletePayment('${p.Payment_ID}','${p.Amount_Paid}','${p.Payment_Date}')">🗑 Delete</button>
               </td>
             </tr>
           `).join('')}
@@ -1888,14 +2155,19 @@ async function renderSettings(container) {
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-header"><div class="card-title">🗃️ Data Management</div></div>
+      <div class="card" style="border:2px solid var(--danger)">
+        <div class="card-header" style="background:var(--danger-light)"><div class="card-title" style="color:var(--danger)">⚠️ Danger Zone</div></div>
         <div class="card-body">
           <div style="display:flex;flex-direction:column;gap:0.75rem">
             <div style="padding:0.875rem;background:var(--danger-light);border-radius:var(--radius-md);font-size:0.85rem;color:var(--danger-dark)">
-              ⚠️ Clearing sample data will remove all demo records. This cannot be undone.
+              ⚠️ These actions are irreversible. Proceed with caution.
             </div>
-            <button class="btn btn-danger" id="btn-clear-sample">🗑️ Clear Sample Data</button>
+            <button class="btn btn-danger" id="btn-clear-sample">🗑️ Clear All Local Data</button>
+            <div style="margin-top:0.5rem;padding:1rem;border:1px solid var(--danger);border-radius:var(--radius-md);background:#fff">
+              <div style="font-weight:700;color:var(--danger);margin-bottom:0.35rem;font-size:0.95rem">🔴 Purge All Payments — Fresh Start</div>
+              <div style="font-size:0.82rem;color:var(--gray-600);margin-bottom:0.75rem">Removes <strong>ALL payment records and installments</strong> from both the app and Google Sheets. Student profiles are kept. Payment IDs restart from PAY001. Completely irreversible.</div>
+              <button class="btn btn-danger" onclick="openPurgeModal()" style="font-weight:700;letter-spacing:0.02em">🔴 Purge All Payments &amp; Reset IDs</button>
+            </div>
             <button class="btn btn-outline-gray" onclick="navigateTo('settings')">🔄 Refresh Settings</button>
           </div>
         </div>
@@ -1984,6 +2256,53 @@ function generateReceiptData(paymentId, studentId) {
   const num    = (paymentId || '').replace('PAY', '').padStart(4, '0');
   const receiptNumber = `${prefix}-${year}-${num}`;
 
+  const totalFee = parseFloat(student.Total_Fee || 0);
+  const totalPaid = parseFloat(student.Total_Paid !== undefined ? student.Total_Paid : (student.Paid_Amount || 0));
+  const remainingFee = parseFloat(student.Remaining_Fee !== undefined ? student.Remaining_Fee : Math.max(0, totalFee - totalPaid));
+  const isFullPaid = remainingFee <= 0;
+
+  let nextDueDate = '';
+  let nextInstAmount = parseFloat(student.Next_Installment_Amount || 0);
+
+  if (!isFullPaid) {
+    // 1. Look for subsequent installment in local store
+    if (Array.isArray(_localStore.installments)) {
+      const currNum = parseInt(payment.Installment_Number) || 0;
+      const nextInst = _localStore.installments.find(i =>
+        i.Student_ID === studentId &&
+        parseInt(i.Installment_Number) > currNum &&
+        (i.Status === 'Pending' || i.Status === 'Overdue')
+      );
+      if (nextInst) {
+        nextDueDate = nextInst.Due_Date || '';
+        if (!nextInstAmount) nextInstAmount = parseFloat(nextInst.Installment_Amount || nextInst.Amount || 0);
+      } else {
+        const anyPending = _localStore.installments
+          .filter(i => i.Student_ID === studentId && (i.Status === 'Pending' || i.Status === 'Overdue'))
+          .sort((a, b) => new Date(a.Due_Date) - new Date(b.Due_Date))[0];
+        if (anyPending) {
+          nextDueDate = anyPending.Due_Date || '';
+          if (!nextInstAmount) nextInstAmount = parseFloat(anyPending.Installment_Amount || anyPending.Amount || 0);
+        }
+      }
+    }
+
+    // 2. Fall back to student's Next_Due_Date
+    if (!nextDueDate && student.Next_Due_Date) {
+      nextDueDate = student.Next_Due_Date;
+    }
+
+    // 3. Fall back to 30 days after payment date
+    if (!nextDueDate && payment.Payment_Date) {
+      const d = new Date(payment.Payment_Date);
+      const days = student.Installment_Plan === 'Weekly' ? 7 : student.Installment_Plan === 'Quarterly' ? 90 : 30;
+      d.setDate(d.getDate() + days);
+      nextDueDate = d.toISOString().split('T')[0];
+    }
+  }
+
+  const numInstallments = parseInt(student.Num_Installments || student.No_Of_Installments || student.Installments || 1);
+
   return {
     receiptNumber,
     paymentId:         payment.Payment_ID,
@@ -1996,10 +2315,15 @@ function generateReceiptData(paymentId, studentId) {
     paymentMode:       payment.Payment_Mode || '—',
     transactionId:     payment.Transaction_ID || '',
     installmentNumber: payment.Installment_Number || 1,
-    totalFee:          parseFloat(student.Total_Fee || 0),
-    totalPaid:         parseFloat(student.Paid_Amount || 0),
-    remainingFee:      parseFloat(student.Remaining_Fee || 0),
-    paymentStatus:     student.Payment_Status || '—',
+    numInstallments:   numInstallments,
+    totalFee:          totalFee,
+    totalPaid:         totalPaid,
+    remainingFee:      remainingFee,
+    nextInstallment:   nextInstAmount,
+    nextDueDate:       nextDueDate,
+    paymentStatus:     student.Payment_Status || (isFullPaid ? 'Completed' : 'Partially Paid'),
+    studentMobile:     student.Mobile || student.Phone || '—',
+    studentCollege:    student.College_Org || student.College || '—',
     // Institute info
     instituteName:    settings.Institute_Name    || 'SKILLEZE TECHNOLOGIES',
     instituteAddress: settings.Institute_Address || '',
@@ -2204,13 +2528,13 @@ function generateReceiptSheetHTML(data, settings, copyLabel = 'STUDENT COPY') {
                 <span class="info-label">Payment Mode</span>
                 <span class="info-val" style="color:#2563eb;font-weight:700">${data.paymentMode}</span>
               </div>
-              <div class="receipt-info-row">
-                <span class="info-label">Transaction / Ref ID</span>
-                <span class="info-val" style="font-family:monospace">${data.transactionId || 'TXN-' + data.receiptNumber}</span>
+              <div class="receipt-info-row" style="align-items:flex-start">
+                <span class="info-label" style="flex-shrink:0">Transaction / Ref ID</span>
+                <span class="info-val" style="font-family:monospace;word-break:break-all;overflow-wrap:anywhere;text-align:right;max-width:65%;font-size:0.75rem">${data.transactionId || 'TXN-' + data.receiptNumber}</span>
               </div>
               <div class="receipt-info-row">
                 <span class="info-label">Installment Stage</span>
-                <span class="info-val">Installment #${data.installmentNumber} of ${data.numInstallments || 3}</span>
+                <span class="info-val">Installment #${data.installmentNumber} of ${data.numInstallments || 1}</span>
               </div>
               <div class="receipt-info-row">
                 <span class="info-label">Next Installment Date</span>

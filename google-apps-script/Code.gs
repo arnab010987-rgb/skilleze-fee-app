@@ -100,6 +100,15 @@ function doPost(e) {
       case 'addPayment':
         result = addPayment(body.data);
         break;
+      case 'updatePayment':
+        result = updatePayment(body.data);
+        break;
+      case 'deletePayment':
+        result = deletePayment(body.id);
+        break;
+      case 'purgeAllPayments':
+        result = purgeAllPayments();
+        break;
       case 'updateSettings':
         result = updateSettings(body.data);
         break;
@@ -360,17 +369,186 @@ function updateStudent(data) {
 
 function deleteStudent(studentId) {
   const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-  const sheet = ss.getSheetByName(SHEET_STUDENTS);
-  if (!sheet) return { success: false, message: 'Sheet not found' };
+
+  // Remove from Students sheet
+  const stuSheet = ss.getSheetByName(SHEET_STUDENTS);
+  if (stuSheet) {
+    const stuData = stuSheet.getDataRange().getValues();
+    for (let i = stuData.length - 1; i >= 1; i--) {
+      if (stuData[i][0] == studentId) {
+        stuSheet.deleteRow(i + 1);
+        break;
+      }
+    }
+  }
+
+  // Remove all Payments for this student
+  const paySheet = ss.getSheetByName(SHEET_PAYMENTS);
+  if (paySheet && paySheet.getLastRow() > 1) {
+    const payData = paySheet.getDataRange().getValues();
+    for (let i = payData.length - 1; i >= 1; i--) {
+      if (payData[i][1] == studentId) {
+        paySheet.deleteRow(i + 1);
+      }
+    }
+  }
+
+  // Remove all Installments for this student
+  const instSheet = ss.getSheetByName(SHEET_INSTALLMENTS);
+  if (instSheet && instSheet.getLastRow() > 1) {
+    const instData = instSheet.getDataRange().getValues();
+    for (let i = instData.length - 1; i >= 1; i--) {
+      if (instData[i][1] == studentId) {
+        instSheet.deleteRow(i + 1);
+      }
+    }
+  }
+
+  return { success: true, message: 'Student and all related records deleted successfully' };
+}
+
+function deletePayment(paymentId) {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(SHEET_PAYMENTS);
+  if (!sheet) return { success: false, message: 'Payments sheet not found' };
 
   const data = sheet.getDataRange().getValues();
   for (let i = 1; i < data.length; i++) {
-    if (data[i][0] == studentId) {
+    if (data[i][0] == paymentId) {
       sheet.deleteRow(i + 1);
-      return { success: true, message: 'Student deleted successfully' };
+      return { success: true, message: 'Payment deleted successfully' };
     }
   }
-  return { success: false, message: 'Student not found' };
+  return { success: false, message: 'Payment not found' };
+}
+
+function updatePayment(data) {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const paySheet = ss.getSheetByName(SHEET_PAYMENTS);
+  const stuSheet = ss.getSheetByName(SHEET_STUDENTS);
+  if (!paySheet || !stuSheet) return { success: false, message: 'Required sheets not found' };
+
+  const paymentId = data.Payment_ID;
+  const payData = paySheet.getDataRange().getValues();
+  let payRow = -1;
+  let studentId = data.Student_ID;
+
+  for (let i = 1; i < payData.length; i++) {
+    if (payData[i][0] == paymentId) {
+      payRow = i + 1;
+      if (!studentId) studentId = payData[i][1];
+      break;
+    }
+  }
+
+  if (payRow < 0) return { success: false, message: 'Payment record not found' };
+
+  // Get student row
+  const stuData = stuSheet.getDataRange().getValues();
+  let stuRow = -1;
+  for (let i = 1; i < stuData.length; i++) {
+    if (stuData[i][0] == studentId) {
+      stuRow = i + 1;
+      break;
+    }
+  }
+
+  const now = new Date().toISOString();
+  const amountPaid = parseFloat(data.Amount_Paid) || parseFloat(payData[payRow - 1][5]) || 0;
+  const paymentDate = data.Payment_Date || payData[payRow - 1][4];
+  const paymentMode = data.Payment_Mode || payData[payRow - 1][6];
+  const txnId = data.Transaction_ID !== undefined ? data.Transaction_ID : payData[payRow - 1][7];
+  const instNo = data.Installment_Number !== undefined ? parseInt(data.Installment_Number) : payData[payRow - 1][8];
+  const remarks = data.Remarks !== undefined ? data.Remarks : payData[payRow - 1][10];
+
+  // Update payment row in Payments sheet
+  paySheet.getRange(payRow, 5).setValue(paymentDate);
+  paySheet.getRange(payRow, 6).setValue(amountPaid);
+  paySheet.getRange(payRow, 7).setValue(paymentMode);
+  paySheet.getRange(payRow, 8).setValue(txnId);
+  paySheet.getRange(payRow, 9).setValue(instNo);
+  paySheet.getRange(payRow, 11).setValue(remarks);
+
+  // Recalculate student financials if student exists
+  let newTotalPaid = 0;
+  let newRemaining = 0;
+  let paymentStatus = 'Pending';
+  if (stuRow > 0) {
+    const totalFee = parseFloat(stuData[stuRow - 1][6]) || 0;
+    // Re-sum all payments for this student
+    const updatedPayData = paySheet.getDataRange().getValues();
+    for (let i = 1; i < updatedPayData.length; i++) {
+      if (updatedPayData[i][1] == studentId) {
+        newTotalPaid += parseFloat(updatedPayData[i][5]) || 0;
+      }
+    }
+    newRemaining = Math.max(0, totalFee - newTotalPaid);
+    if (newRemaining <= 0 && totalFee > 0) {
+      paymentStatus = 'Completed';
+    } else if (newTotalPaid > 0) {
+      paymentStatus = 'Partially Paid';
+    } else {
+      paymentStatus = 'Pending';
+    }
+
+    // Update student row
+    stuSheet.getRange(stuRow, 10).setValue(newTotalPaid);
+    stuSheet.getRange(stuRow, 11).setValue(newRemaining);
+    stuSheet.getRange(stuRow, 14).setValue(paymentStatus);
+    stuSheet.getRange(stuRow, 19).setValue(now);
+
+    // Update Remaining_After_Payment on this payment row
+    paySheet.getRange(payRow, 10).setValue(newRemaining);
+
+    // Update installment row if exists
+    updateInstallmentStatus(studentId, instNo, amountPaid, newRemaining, paymentDate);
+  }
+
+  return {
+    success: true,
+    message: 'Payment updated successfully',
+    data: {
+      paymentId: paymentId,
+      newTotalPaid: newTotalPaid,
+      newRemaining: newRemaining,
+      paymentStatus: paymentStatus
+    }
+  };
+}
+
+function purgeAllPayments() {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+
+  // Clear Payments sheet (keep header)
+  const paySheet = ss.getSheetByName(SHEET_PAYMENTS);
+  if (paySheet && paySheet.getLastRow() > 1) {
+    paySheet.deleteRows(2, paySheet.getLastRow() - 1);
+  }
+
+  // Clear Installments sheet (keep header)
+  const instSheet = ss.getSheetByName(SHEET_INSTALLMENTS);
+  if (instSheet && instSheet.getLastRow() > 1) {
+    instSheet.deleteRows(2, instSheet.getLastRow() - 1);
+  }
+
+  // Reset Total_Paid, Remaining_Fee, Payment_Status on all students
+  const stuSheet = ss.getSheetByName(SHEET_STUDENTS);
+  if (stuSheet && stuSheet.getLastRow() > 1) {
+    const stuData = stuSheet.getDataRange().getValues();
+    const now = new Date().toISOString();
+    for (let i = 1; i < stuData.length; i++) {
+      if (!stuData[i][0]) continue;
+      const totalFee = parseFloat(stuData[i][6]) || 0;
+      stuSheet.getRange(i + 1, 10).setValue(0);           // Total_Paid
+      stuSheet.getRange(i + 1, 11).setValue(totalFee);    // Remaining_Fee
+      stuSheet.getRange(i + 1, 12).setValue(0);           // Next_Installment_Amount
+      stuSheet.getRange(i + 1, 13).setValue('');          // Next_Due_Date
+      stuSheet.getRange(i + 1, 14).setValue('Pending');   // Payment_Status
+      stuSheet.getRange(i + 1, 19).setValue(now);         // Updated_At
+    }
+  }
+
+  return { success: true, message: 'All payments and installments purged. Student payment statuses reset.' };
 }
 
 // ============================================================

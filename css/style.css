@@ -1563,6 +1563,7 @@ textarea.form-control {
   padding: 3px 10px;
   font-size: 0.76rem;
   border-bottom: 1px solid #f8fafc;
+  gap: 8px;
 }
 
 .receipt-info-row:last-child {
@@ -1572,12 +1573,17 @@ textarea.form-control {
 .receipt-info-row .info-label {
   color: #64748b;
   font-weight: 500;
+  flex-shrink: 0;
 }
 
 .receipt-info-row .info-val {
   color: #0f172a;
   font-weight: 600;
   text-align: right;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  max-width: 65%;
+  line-height: 1.25;
 }
 
 /* --- Itemized Particulars Table --- */
@@ -2047,6 +2053,13 @@ textarea.form-control {
   .receipt-info-row {
     padding: 1.5px 6px !important;
     font-size: 0.7rem !important;
+    gap: 6px !important;
+  }
+
+  .receipt-info-row .info-val {
+    word-break: break-all !important;
+    overflow-wrap: anywhere !important;
+    max-width: 65% !important;
   }
 
   .receipt-items-table {

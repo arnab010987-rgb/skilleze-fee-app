@@ -733,6 +733,173 @@ async function getPayments(studentId = null, { forceRefresh = false } = {}) {
   return filterList(_localStore.payments || []);
 }
 
+async function deletePayment(paymentId) {
+  clearCache();
+
+  // Find the payment locally first
+  const payment = _localStore.payments.find(p => p.Payment_ID === paymentId);
+  if (!payment) return { success: false, message: 'Payment not found' };
+
+  const studentId = payment.Student_ID;
+  const student = _localStore.students.find(s => s.Student_ID === studentId);
+
+  // Remove payment from local store
+  _localStore.payments = _localStore.payments.filter(p => p.Payment_ID !== paymentId);
+
+  // Recalculate student totals from remaining payments
+  if (student) {
+    const studentPayments = _localStore.payments.filter(p => p.Student_ID === studentId);
+    const newTotalPaid = studentPayments.reduce((sum, p) => sum + (parseFloat(p.Amount_Paid) || 0), 0);
+    const totalFee = parseFloat(student.Total_Fee) || 0;
+    const newRemaining = totalFee - newTotalPaid;
+    let newStatus = 'Pending';
+    if (newRemaining <= 0 && totalFee > 0) newStatus = 'Completed';
+    else if (newTotalPaid > 0) newStatus = 'Partially Paid';
+
+    const idx = _localStore.students.findIndex(s => s.Student_ID === studentId);
+    if (idx >= 0) {
+      _localStore.students[idx].Total_Paid = newTotalPaid;
+      _localStore.students[idx].Remaining_Fee = newRemaining;
+      _localStore.students[idx].Payment_Status = newStatus;
+      _localStore.students[idx].Updated_At = new Date().toISOString();
+    }
+  }
+
+  // Remove corresponding installment record
+  _localStore.installments = _localStore.installments.filter(
+    i => !(i.Student_ID === studentId && parseInt(i.Installment_Number) === parseInt(payment.Installment_Number))
+  );
+
+  persistLocalStore();
+
+  if (!_isUsingLocalData) {
+    try {
+      const res = await apiPost({ action: 'deletePayment', id: paymentId });
+      if (res && res.success) return res;
+    } catch (e) {
+      console.warn('Remote deletePayment failed, deleted locally', e);
+    }
+  }
+
+  return { success: true, message: 'Payment deleted successfully' };
+}
+
+async function updatePayment(data) {
+  clearCache();
+
+  const paymentId = data.Payment_ID;
+  const payIdx = _localStore.payments.findIndex(p => p.Payment_ID === paymentId);
+  if (payIdx < 0) return { success: false, message: 'Payment record not found' };
+
+  const oldPayment = _localStore.payments[payIdx];
+  const studentId = oldPayment.Student_ID;
+  const student = _localStore.students.find(s => s.Student_ID === studentId);
+
+  const amountPaid = parseFloat(data.Amount_Paid);
+  if (isNaN(amountPaid) || amountPaid <= 0) {
+    return { success: false, message: 'Payment amount must be greater than 0' };
+  }
+
+  const now = new Date().toISOString();
+
+  // Update payment in local store
+  _localStore.payments[payIdx] = {
+    ...oldPayment,
+    Payment_Date: data.Payment_Date || oldPayment.Payment_Date,
+    Amount_Paid: amountPaid,
+    Payment_Mode: data.Payment_Mode || oldPayment.Payment_Mode,
+    Transaction_ID: data.Transaction_ID !== undefined ? data.Transaction_ID : oldPayment.Transaction_ID,
+    Installment_Number: data.Installment_Number !== undefined ? parseInt(data.Installment_Number) : oldPayment.Installment_Number,
+    Remarks: data.Remarks !== undefined ? data.Remarks : oldPayment.Remarks,
+    Updated_At: now
+  };
+
+  // Recalculate student totals
+  if (student) {
+    const studentPayments = _localStore.payments.filter(p => p.Student_ID === studentId);
+    const newTotalPaid = studentPayments.reduce((sum, p) => sum + (parseFloat(p.Amount_Paid) || 0), 0);
+    const totalFee = parseFloat(student.Total_Fee || 0);
+    const newRemaining = Math.max(0, totalFee - newTotalPaid);
+
+    let paymentStatus = 'Pending';
+    if (newRemaining <= 0 && totalFee > 0) paymentStatus = 'Completed';
+    else if (newTotalPaid > 0) paymentStatus = 'Partially Paid';
+
+    const sIdx = _localStore.students.findIndex(s => s.Student_ID === studentId);
+    if (sIdx >= 0) {
+      _localStore.students[sIdx].Total_Paid = newTotalPaid;
+      _localStore.students[sIdx].Remaining_Fee = newRemaining;
+      _localStore.students[sIdx].Payment_Status = paymentStatus;
+      _localStore.students[sIdx].Updated_At = now;
+    }
+
+    _localStore.payments[payIdx].Remaining_After_Payment = newRemaining;
+
+    // Update corresponding installment if exists
+    const instNo = _localStore.payments[payIdx].Installment_Number;
+    const instIdx = _localStore.installments.findIndex(
+      i => i.Student_ID === studentId && parseInt(i.Installment_Number) === parseInt(instNo)
+    );
+    if (instIdx >= 0) {
+      _localStore.installments[instIdx].Paid_Amount = amountPaid;
+      _localStore.installments[instIdx].Remaining_Amount = Math.max(0, _localStore.installments[instIdx].Installment_Amount - amountPaid);
+      _localStore.installments[instIdx].Status = _localStore.installments[instIdx].Remaining_Amount <= 0 ? 'Completed' : 'Paid';
+      _localStore.installments[instIdx].Paid_Date = data.Payment_Date || oldPayment.Payment_Date;
+    }
+  }
+
+  persistLocalStore();
+
+  if (!_isUsingLocalData) {
+    try {
+      const res = await apiPost({ action: 'updatePayment', data });
+      if (res && res.success) return res;
+    } catch (e) {
+      console.warn('Remote updatePayment failed, updated locally', e);
+    }
+  }
+
+  return { success: true, message: 'Payment updated successfully', data: _localStore.payments[payIdx] };
+}
+
+async function purgeAllPayments() {
+  clearCache();
+
+  // Reset all students' payment fields
+  _localStore.students = _localStore.students.map(s => ({
+    ...s,
+    Total_Paid: 0,
+    Remaining_Fee: parseFloat(s.Total_Fee) || 0,
+    Payment_Status: 'Pending',
+    Next_Installment_Amount: 0,
+    Next_Due_Date: '',
+    Updated_At: new Date().toISOString()
+  }));
+
+  // Clear all payments and installments
+  _localStore.payments = [];
+  _localStore.installments = [];
+
+  // Reset ID counters to start fresh from 1
+  _localStore.paymentIdCounter = 1;
+  _localStore.studentIdCounter = _localStore.students.length > 0
+    ? Math.max(..._localStore.students.map(s => parseInt((s.Student_ID || '').replace('STU', '')) || 0)) + 1
+    : 1;
+
+  persistLocalStore();
+
+  if (!_isUsingLocalData) {
+    try {
+      const res = await apiPost({ action: 'purgeAllPayments' });
+      if (res && res.success) return res;
+    } catch (e) {
+      console.warn('Remote purgeAllPayments failed, purged locally', e);
+    }
+  }
+
+  return { success: true, message: 'All payments and installments have been removed. System reset for fresh start.' };
+}
+
 // ============================================================
 // INSTALLMENT API FUNCTIONS
 // ============================================================
@@ -1008,41 +1175,76 @@ function generateReceiptData(paymentId, studentId) {
   const student = _localStore.students.find(s => s.Student_ID === studentId);
   if (!payment || !student) return null;
 
-  let nextDueDate = student.Next_Due_Date || '';
-  let nextInstAmount = student.Next_Installment_Amount || 0;
-  if (!nextDueDate && Array.isArray(_localStore.installments)) {
-    const pendingInst = _localStore.installments
-      .filter(i => i.Student_ID === studentId && (i.Status === 'Pending' || i.Status === 'Overdue'))
-      .sort((a, b) => new Date(a.Due_Date) - new Date(b.Due_Date))[0];
-    if (pendingInst) {
-      nextDueDate = pendingInst.Due_Date || '';
-      if (!nextInstAmount) nextInstAmount = pendingInst.Amount || 0;
+  const totalFee = parseFloat(student.Total_Fee || 0);
+  const totalPaid = parseFloat(student.Total_Paid !== undefined ? student.Total_Paid : (student.Paid_Amount || 0));
+  const remainingFee = parseFloat(student.Remaining_Fee !== undefined ? student.Remaining_Fee : Math.max(0, totalFee - totalPaid));
+  const isFullPaid = remainingFee <= 0;
+
+  let nextDueDate = '';
+  let nextInstAmount = parseFloat(student.Next_Installment_Amount || 0);
+
+  if (!isFullPaid) {
+    // 1. Look for subsequent installment in local store
+    if (Array.isArray(_localStore.installments)) {
+      const currNum = parseInt(payment.Installment_Number) || 0;
+      const nextInst = _localStore.installments.find(i =>
+        i.Student_ID === studentId &&
+        parseInt(i.Installment_Number) > currNum &&
+        (i.Status === 'Pending' || i.Status === 'Overdue')
+      );
+      if (nextInst) {
+        nextDueDate = nextInst.Due_Date || '';
+        if (!nextInstAmount) nextInstAmount = parseFloat(nextInst.Installment_Amount || nextInst.Amount || 0);
+      } else {
+        const anyPending = _localStore.installments
+          .filter(i => i.Student_ID === studentId && (i.Status === 'Pending' || i.Status === 'Overdue'))
+          .sort((a, b) => new Date(a.Due_Date) - new Date(b.Due_Date))[0];
+        if (anyPending) {
+          nextDueDate = anyPending.Due_Date || '';
+          if (!nextInstAmount) nextInstAmount = parseFloat(anyPending.Installment_Amount || anyPending.Amount || 0);
+        }
+      }
+    }
+
+    // 2. Fall back to student's Next_Due_Date
+    if (!nextDueDate && student.Next_Due_Date) {
+      nextDueDate = student.Next_Due_Date;
+    }
+
+    // 3. Fall back to 30 days after payment date
+    if (!nextDueDate && payment.Payment_Date) {
+      const d = new Date(payment.Payment_Date);
+      const days = student.Installment_Plan === 'Weekly' ? 7 : student.Installment_Plan === 'Quarterly' ? 90 : 30;
+      d.setDate(d.getDate() + days);
+      nextDueDate = d.toISOString().split('T')[0];
     }
   }
+
+  const numInstallments = parseInt(student.Num_Installments || student.No_Of_Installments || student.Installments || 1);
 
   return {
     receiptNumber: generateReceiptNumber(paymentId),
     paymentId: payment.Payment_ID,
     studentName: student.Student_Name,
     studentId: student.Student_ID,
-    course: student.Course,
+    course: student.Course || payment.Course || '—',
     paymentDate: payment.Payment_Date,
-    amountPaid: payment.Amount_Paid,
-    paymentMode: payment.Payment_Mode,
-    transactionId: payment.Transaction_ID,
-    totalFee: student.Total_Fee,
-    totalPaid: student.Total_Paid,
-    remainingFee: student.Remaining_Fee,
-    nextInstallment: nextInstAmount || student.Next_Installment_Amount,
+    amountPaid: parseFloat(payment.Amount_Paid || 0),
+    paymentMode: payment.Payment_Mode || '—',
+    transactionId: payment.Transaction_ID || '',
+    totalFee: totalFee,
+    totalPaid: totalPaid,
+    remainingFee: remainingFee,
+    nextInstallment: nextInstAmount,
     nextDueDate: nextDueDate,
-    paymentStatus: student.Payment_Status,
-    installmentNumber: payment.Installment_Number,
-    remarks: payment.Remarks,
-    studentMobile: student.Mobile || '',
-    studentEmail: student.Email || '',
-    studentCollege: student.College_Org || '',
-    studentAddress: student.Address || '',
-    numInstallments: student.Num_Installments || 1,
+    paymentStatus: student.Payment_Status || (isFullPaid ? 'Completed' : 'Partially Paid'),
+    installmentNumber: payment.Installment_Number || 1,
+    remarks: payment.Remarks || '',
+    studentMobile: student.Mobile || student.Phone || '—',
+    studentEmail: student.Email || '—',
+    studentCollege: student.College_Org || student.College || '—',
+    studentAddress: student.Address || '—',
+    numInstallments: numInstallments,
     enrollmentDate: student.Enrollment_Date || '',
     createdDate: payment.Created_At || payment.Payment_Date
   };
