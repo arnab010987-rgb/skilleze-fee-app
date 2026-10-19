@@ -1418,6 +1418,9 @@ function openPurgeModal() {
       newBtn.disabled = false;
       newBtn.innerHTML = '🔴 Purge All Payments';
     }
+  };
+}
+
 // ============================================================
 // EDIT PAYMENT
 // ============================================================
